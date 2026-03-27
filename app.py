@@ -16,6 +16,7 @@ GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 VERSION_URL     = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main/version.txt"
 UPDATE_URL      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main/update.sh"
+GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
 
 import rumps
 
