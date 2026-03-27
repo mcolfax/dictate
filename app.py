@@ -159,12 +159,13 @@ class DictateApp(rumps.App):
                     f.write(data)
                 print(f"✅ Updated {fname}")
 
-            # Also update local dictation folder
+            # Also update local dictation folder (only if different paths)
+            import shutil
             for fname in files_to_update:
                 src  = os.path.join(APP_RESOURCES, fname)
                 dest = os.path.join(APP_DATA_DIR, fname)
-                import shutil
-                shutil.copy2(src, dest)
+                if os.path.abspath(src) != os.path.abspath(dest):
+                    shutil.copy2(src, dest)
 
             if self._server_proc:
                 self._server_proc.terminate()
