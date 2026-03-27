@@ -20,7 +20,7 @@ CONFIG_FILE = os.path.join(_DATA_DIR, 'config.json')
 STATS_FILE  = os.path.join(_DATA_DIR, 'stats.json')
 SAMPLE_RATE    = 16000
 OLLAMA_URL     = "http://localhost:11434/api/generate"
-APP_VERSION    = "1.3.2"
+APP_VERSION = "1.3.2"
 GITHUB_RAW     = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -727,6 +727,7 @@ HTML = r"""<!DOCTYPE html>
     <div class="app-hint">Words Whisper consistently mishears — corrected before AI cleanup.</div>
     <div class="vocab-list" id="vocabList"></div>
     <button class="add-btn" onclick="addVocabRow()">+ Add Entry</button>
+    <button class="save-btn" id="generalSaveBtn" onclick="saveAndConfirm()">Save Settings</button>
     <button class="save-btn" id="vocabSaveBtn" onclick="saveVocab()">Save Vocabulary</button>
   </div>
   <div class="tab-panel" id="tab-apptones">
@@ -822,7 +823,18 @@ function updateClipboardUI(){const lbl=document.getElementById('clipboardLabel')
 function updateSoundUI(){const lbl=document.getElementById('soundLabel');lbl.textContent=soundEnabled?'On':'Off';lbl.className='toggle-label'+(soundEnabled?'':' off');}
 function updatePauseUI(){const v=document.getElementById('pauseSeconds').value;const lbl=document.getElementById('pauseLabel');lbl.textContent=pauseEnabled?`On — ${v}s silence`:'Off';lbl.className='toggle-label'+(pauseEnabled?'':' off');document.getElementById('pauseSecondsField').style.opacity=pauseEnabled?'1':'0.4';}
 function setTone(tone){currentTone=tone;document.querySelectorAll('.tone-btn').forEach(b=>b.classList.toggle('active',b.dataset.tone===tone));autoSave();}
-async function autoSave(){await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:document.getElementById('mode').value,whisper_model:document.getElementById('whisper_model').value,ollama_model:document.getElementById('ollama_model').value,tone:currentTone,cleanup:cleanupEnabled,clipboard_only:clipboardOnly,sound_feedback:soundEnabled,pause_detection:pauseEnabled,pause_seconds:parseFloat(document.getElementById('pauseSeconds').value)})});}
+async function saveAndConfirm(){
+  await autoSave();
+  const btn=document.getElementById('generalSaveBtn');
+  btn.textContent='Saved ✓';btn.classList.add('saved');
+  setTimeout(()=>{btn.textContent='Save Settings';btn.classList.remove('saved');},2000);
+}
+async function autoSave(){
+  const cfg={mode:document.getElementById('mode').value,whisper_model:document.getElementById('whisper_model').value,ollama_model:document.getElementById('ollama_model').value,tone:currentTone,cleanup:cleanupEnabled,clipboard_only:clipboardOnly,sound_feedback:soundEnabled,pause_detection:pauseEnabled,pause_seconds:parseFloat(document.getElementById('pauseSeconds').value)};
+  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+  // Update currentConfig so poll doesn't overwrite user's selection
+  Object.assign(currentConfig, cfg);
+}
 async function clearHistory(){
   await fetch('/api/history/clear',{method:'POST'});
   lastHistoryKey='';

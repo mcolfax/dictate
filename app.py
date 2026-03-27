@@ -14,7 +14,7 @@ SERVER_PATH     = os.path.join(APP_RESOURCES, "server.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
-CURRENT_VERSION = "1.3.1"
+CURRENT_VERSION = "1.3.2"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
