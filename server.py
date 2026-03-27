@@ -20,7 +20,7 @@ CONFIG_FILE = os.path.join(_DATA_DIR, 'config.json')
 STATS_FILE  = os.path.join(_DATA_DIR, 'stats.json')
 SAMPLE_RATE    = 16000
 OLLAMA_URL     = "http://localhost:11434/api/generate"
-APP_VERSION    = "1.2.5"
+APP_VERSION    = "1.3.0"
 GITHUB_RAW     = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
