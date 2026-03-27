@@ -11,7 +11,7 @@ VENV_PYTHON   = os.path.join(APP_DATA_DIR, "venv", "bin", "python3")
 SERVER_PATH   = os.path.join(APP_RESOURCES, "server.py")
 OLLAMA_BIN    = "/opt/homebrew/bin/ollama"
 
-CURRENT_VERSION = "1.2.3"
+CURRENT_VERSION = "1.2.5"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 VERSION_URL     = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main/version.txt"
