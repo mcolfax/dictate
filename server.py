@@ -20,7 +20,7 @@ CONFIG_FILE = os.path.join(_DATA_DIR, 'config.json')
 STATS_FILE  = os.path.join(_DATA_DIR, 'stats.json')
 SAMPLE_RATE    = 16000
 OLLAMA_URL     = "http://localhost:11434/api/generate"
-APP_VERSION    = "1.2.0"
+APP_VERSION    = "1.2.1"
 GITHUB_RAW     = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -806,7 +806,12 @@ function updateSoundUI(){const lbl=document.getElementById('soundLabel');lbl.tex
 function updatePauseUI(){const v=document.getElementById('pauseSeconds').value;const lbl=document.getElementById('pauseLabel');lbl.textContent=pauseEnabled?`On — ${v}s silence`:'Off';lbl.className='toggle-label'+(pauseEnabled?'':' off');document.getElementById('pauseSecondsField').style.opacity=pauseEnabled?'1':'0.4';}
 function setTone(tone){currentTone=tone;document.querySelectorAll('.tone-btn').forEach(b=>b.classList.toggle('active',b.dataset.tone===tone));autoSave();}
 async function autoSave(){await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:document.getElementById('mode').value,whisper_model:document.getElementById('whisper_model').value,ollama_model:document.getElementById('ollama_model').value,tone:currentTone,cleanup:cleanupEnabled,clipboard_only:clipboardOnly,sound_feedback:soundEnabled,pause_detection:pauseEnabled,pause_seconds:parseFloat(document.getElementById('pauseSeconds').value)})});}
-async function clearHistory(){await fetch('/api/history/clear',{method:'POST'});lastHistoryKey='';fetchStatus();}
+async function clearHistory(){
+  await fetch('/api/history/clear',{method:'POST'});
+  lastHistoryKey='';
+  document.getElementById('historyList').innerHTML='<div class="empty-state">No transcriptions yet</div>';
+  fetchStatus();
+}
 let vocabRows=[];
 async function loadVocab(){const data=await(await fetch('/api/vocab')).json();vocabRows=data.map(e=>({from:e.from,to:e.to}));renderVocab();}
 function renderVocab(){const list=document.getElementById('vocabList');if(vocabRows.length===0){list.innerHTML='<div class="empty-state" style="padding:20px 0">No entries yet</div>';return;}list.innerHTML=vocabRows.map((r,i)=>`<div class="vocab-row"><input class="vocab-input" placeholder="mishear" value="${escHtml(r.from)}" oninput="vocabRows[${i}].from=this.value"><span class="vocab-arrow">→</span><input class="vocab-input" placeholder="correction" value="${escHtml(r.to)}" oninput="vocabRows[${i}].to=this.value"><button class="vocab-del" onclick="removeVocabRow(${i})">×</button></div>`).join('');}

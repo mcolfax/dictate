@@ -95,7 +95,7 @@ class DictateApp(rumps.App):
 
                 if new_icon != self._current_icon:
                     self._current_icon = new_icon
-                    self.template = recording is False  # color when recording, mono when idle
+                    self.template = not recording  # amber when recording, black when idle
                     self.icon = os.path.join(APP_RESOURCES, new_icon)
 
                 if enabled != self._enabled:
