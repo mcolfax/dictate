@@ -1,0 +1,6 @@
+config.json
+stats.json
+*.icns
+*.png
+__pycache__/
+venv/
