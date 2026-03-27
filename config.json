@@ -6,7 +6,7 @@
   "whisper_model": "mlx-community/whisper-large-v3-mlx",
   "ollama_model": "llama3.2",
   "tone": "neutral",
-  "cleanup": true,
+  "cleanup": false,
   "clipboard_only": false,
   "sound_feedback": true,
   "pause_detection": false,

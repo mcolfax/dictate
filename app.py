@@ -30,6 +30,9 @@ class DictateApp(rumps.App):
         self._ollama_proc    = None
         self._update_version = None
         self._current_icon   = "icon_menubar.png"
+        _icon_path = os.path.join(APP_RESOURCES, "icon_menubar.png")
+        print(f"Icon path: {_icon_path}, exists: {os.path.exists(_icon_path)}")
+        self.icon = _icon_path
 
         self.toggle_item = rumps.MenuItem("Enable Dictation", callback=self.toggle_dictation)
         self.update_item = rumps.MenuItem("", callback=self.do_update)
