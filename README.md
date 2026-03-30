@@ -18,7 +18,10 @@ No cloud. No subscriptions. No API keys. Everything runs on your Mac.
 1. Download **dict.ai.dmg** from the [latest release](https://github.com/mcolfax/dictai/releases/latest)
 2. Open the DMG and drag **dict.ai.app** to your Applications folder
 3. Open **dict.ai.app** from Applications  
-   *(right-click → Open the first time to bypass Gatekeeper)*
+   ⚠️ **Important:** Right-click → Open (do NOT double-click the first time)  
+   If you see "damaged or incomplete", run this in Terminal:  
+   `xattr -cr /Applications/dict.ai.app`  
+   Then try opening again.
 4. The app will automatically install all dependencies in the background — watch the menu bar for progress
 5. Once setup is complete, a notification will appear and the UI will open
 
