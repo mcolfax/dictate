@@ -16,6 +16,9 @@ cp -r "$APP" "$TMP_DIR/Dictate.app"
 xattr -cr "$TMP_DIR/Dictate.app"
 ln -s /Applications "$TMP_DIR/Applications"
 
+# Sign the app ad-hoc
+codesign --force --deep --sign - "$TMP_DIR/dict.ai.app" 2>/dev/null || true
+
 # Create DMG
 hdiutil create \
     -volname "$DMG_NAME" \

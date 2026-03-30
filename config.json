@@ -1,8 +1,8 @@
 {
-  "mode": "toggle",
-  "hotkey": "Button.middle",
-  "hotkey_label": "Middle Click",
-  "hotkey_type": "mouse",
+  "mode": "hold",
+  "hotkey": "alt_r",
+  "hotkey_label": "Right Option (\u2325)",
+  "hotkey_type": "keyboard",
   "whisper_model": "mlx-community/whisper-tiny-mlx",
   "ollama_model": "qwen2.5:0.5b",
   "tone": "concise",

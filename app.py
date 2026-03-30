@@ -9,12 +9,12 @@ import subprocess, sys, os, time, urllib.request, json, threading, shutil, re
 
 APP_RESOURCES   = os.environ.get("APP_RESOURCES", os.path.dirname(os.path.abspath(__file__)))
 APP_DATA_DIR    = os.environ.get("APP_DATA_DIR",  os.path.expanduser("~/.dictate"))
-VENV_PYTHON     = os.path.join(APP_DATA_DIR, "venv", "bin", "python3")
+VENV_PYTHON     = os.path.join(os.path.expanduser("~/Documents/dictation"), "venv", "bin", "python3")
 SERVER_PATH     = os.path.join(APP_RESOURCES, "server.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
-CURRENT_VERSION = "1.4.1"
+CURRENT_VERSION = "1.4.2"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
