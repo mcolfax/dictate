@@ -24,5 +24,8 @@ hdiutil create \
 
 rm -rf "$TMP_DIR"
 
+# Strip quarantine so Gatekeeper doesn't block it
+xattr -cr "$DMG_PATH" 2>/dev/null
+
 echo "✅ Created: $DMG_PATH"
 echo "   Share this file with users."
