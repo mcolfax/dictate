@@ -30,7 +30,11 @@ No cloud. No subscriptions. No API keys. Everything runs on your Mac.
 ---
 
 ## First Launch Permissions
-
+Go to System Settings → Privacy & Security
+Scroll down — you'll see "Dictate was blocked from use because it is not from an identified developer"
+Click Open Anyway
+Enter your password
+Done — opens normally from now on
 macOS will prompt for two permissions — both are required:
 
 - **Microphone** — for voice capture
