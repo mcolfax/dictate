@@ -20,8 +20,8 @@ CONFIG_FILE = os.path.join(_DATA_DIR, 'config.json')
 STATS_FILE  = os.path.join(_DATA_DIR, 'stats.json')
 SAMPLE_RATE    = 16000
 OLLAMA_URL     = "http://localhost:11434/api/generate"
-APP_VERSION = "1.3.2"
-GITHUB_RAW     = "https://raw.githubusercontent.com/mcolfax/dictate/main"
+APP_VERSION = "1.4.0"
+GITHUB_RAW     = "https://raw.githubusercontent.com/mcolfax/dictai/main"
 MAX_RECORD_SECS = 120
 
 DEFAULT_CONFIG = {
@@ -743,7 +743,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
   <div id="updateBanner" style="display:none;background:rgba(245,158,11,.08);border:1px solid var(--amber);border-radius:4px;padding:12px 16px;margin-bottom:24px;align-items:center;justify-content:space-between;gap:16px;">
     <span id="updateMsg" style="font-size:12px;"></span>
-    <a id="updateLink" href="https://github.com/mcolfax/dictate/releases" target="_blank" style="color:var(--amber);text-decoration:none;font-size:10px;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;">View Release →</a>
+    <a id="updateLink" href="https://github.com/mcolfax/dictai/releases" target="_blank" style="color:var(--amber);text-decoration:none;font-size:10px;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;">View Release →</a>
   </div>
   <div class="history-header">
     <div class="section-label" style="margin:0">Recent Transcriptions</div>
