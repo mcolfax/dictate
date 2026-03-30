@@ -1,17 +1,17 @@
 #!/bin/bash
-# make_dmg.sh — Build Dictate.dmg for distribution
-# Run from ~/Documents/dictation after building Dictate.app
+# make_dmg.sh — Build dict.ai.dmg for distribution
+# Run from ~/Documents/dictation after building dict.ai.app
 
 set -e
-APP="/Applications/Dictate.app"
-DMG_NAME="Dictate"
-DMG_PATH="$HOME/Desktop/Dictate.dmg"
+APP="/Applications/dict.ai.app"
+DMG_NAME="dict.ai"
+DMG_PATH="$HOME/Desktop/dict.ai.dmg"
 TMP_DIR=$(mktemp -d)
 
 echo "🔨 Building $DMG_NAME.dmg…"
 
 # Create temp folder with app + Applications symlink
-cp -r "$APP" "$TMP_DIR/Dictate.app"
+cp -r "$APP" "$TMP_DIR/dict.ai.app"
 ln -s /Applications "$TMP_DIR/Applications"
 
 # Create DMG
