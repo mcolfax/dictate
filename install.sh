@@ -49,8 +49,11 @@ mkdir -p "$APP_DIR"
 info "Creating Python environment…"
 python3 -m venv "$APP_DIR/venv"
 source "$APP_DIR/venv/bin/activate"
+info "Upgrading pip…"
+pip install --quiet --upgrade pip
 info "Installing Python packages (may take a few minutes)…"
-pip install --quiet mlx-whisper sounddevice scipy numpy pynput flask rumps
+pip install --quiet mlx-whisper sounddevice scipy numpy pynput flask rumps \
+    pyobjc-framework-WebKit pyobjc-framework-Quartz pyobjc-framework-AVFoundation
 ok "Python environment ready"
 
 # ── Pull Ollama model ─────────────────────────────────────────────────────────
@@ -103,11 +106,33 @@ cat > "$APP_DIR/config.json" << CONFIG
 CONFIG
 
 # Launcher — references files inside the bundle
-cat > "$MACOS/Dictate" << LAUNCHER
+cat > "$MACOS/Dictate" << 'LAUNCHER'
 #!/bin/bash
-export APP_DATA_DIR="\$HOME/.dictate"
-export APP_RESOURCES="\$(dirname "\$0")/../Resources"
-exec "\$HOME/.dictate/venv/bin/python3" "\$APP_RESOURCES/app.py"
+BUNDLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+RESOURCES="$BUNDLE_DIR/Resources"
+DATA_DIR="$HOME/.dictate"
+PYTHON="$DATA_DIR/venv/bin/python3"
+
+mkdir -p "$DATA_DIR"
+
+# Copy resources to data dir if newer (enables bundle-level updates)
+for f in server.py app.py make_icons.py overlay.py settings_window.py; do
+    if [ ! -f "$DATA_DIR/$f" ] || [ "$RESOURCES/$f" -nt "$DATA_DIR/$f" ]; then
+        cp "$RESOURCES/$f" "$DATA_DIR/" 2>/dev/null
+    fi
+done
+cp "$RESOURCES"/icon*.png "$DATA_DIR/" 2>/dev/null
+
+# Start Ollama if needed
+if ! curl -s http://localhost:11434 > /dev/null 2>&1; then
+    /opt/homebrew/bin/ollama serve > /tmp/ollama.log 2>&1 &
+    sleep 2
+fi
+
+export APP_DATA_DIR="$DATA_DIR"
+export APP_RESOURCES="$RESOURCES"
+cd "$DATA_DIR"
+exec arch -arm64 "$PYTHON" "$RESOURCES/app.py"
 LAUNCHER
 chmod +x "$MACOS/Dictate"
 

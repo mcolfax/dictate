@@ -20,7 +20,7 @@ SETTINGS_PATH   = _runtime_path("settings_window.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
-CURRENT_VERSION = "1.4.7"
+CURRENT_VERSION = "1.4.8"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
@@ -118,11 +118,14 @@ class DictateApp(rumps.App):
             if not os.path.exists(VENV_PYTHON):
                 self._set_status("Setting up Python…")
                 subprocess.run(["python3", "-m", "venv", os.path.join(APP_DATA_DIR, "venv")], check=True)
+                subprocess.run([VENV_PYTHON, "-m", "pip", "install", "--quiet", "--upgrade", "pip"], check=True)
                 self._set_status("Installing packages…")
                 subprocess.run([
                     VENV_PYTHON, "-m", "pip", "install", "--quiet",
                     "mlx-whisper", "sounddevice", "scipy", "numpy",
-                    "pynput", "flask", "rumps"
+                    "pynput", "flask", "rumps",
+                    "pyobjc-framework-WebKit", "pyobjc-framework-Quartz",
+                    "pyobjc-framework-AVFoundation",
                 ], check=True)
 
             # 5. Ollama model
@@ -188,9 +191,25 @@ class DictateApp(rumps.App):
             )
             time.sleep(2)
 
+        # Kill any orphaned process already holding port 5001
+        try:
+            result = subprocess.run(["lsof", "-ti", ":5001"], capture_output=True, text=True)
+            for pid in result.stdout.strip().splitlines():
+                try:
+                    os.kill(int(pid), 9)
+                except Exception:
+                    pass
+            if result.stdout.strip():
+                time.sleep(0.5)
+        except Exception:
+            pass
+
         env = os.environ.copy()
         env["PATH"]         = "/opt/homebrew/bin:" + env.get("PATH", "")
         env["APP_DATA_DIR"] = APP_DATA_DIR
+        # Strip any inherited Python env vars that could conflict with the venv
+        for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
+            env.pop(key, None)
         self._server_proc = subprocess.Popen(
             [VENV_PYTHON, _runtime_path("server.py")],
             cwd=APP_DATA_DIR, env=env,
