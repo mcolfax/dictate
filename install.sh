@@ -71,8 +71,9 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS" "$RESOURCES"
 
 # Generate icons
-python3 "$SCRIPT_DIR/make_icons.py" --output "$RESOURCES"
-cp "$RESOURCES/icon.icns" "$RESOURCES/icon.icns"
+python3 "$SCRIPT_DIR/make_icons.py"
+cp "$SCRIPT_DIR"/icon*.png "$RESOURCES/"
+cp "$SCRIPT_DIR/icon.icns" "$RESOURCES/"
 
 # Copy Python source files into the bundle
 cp "$SCRIPT_DIR/server.py"          "$RESOURCES/"

@@ -7,7 +7,7 @@ from AppKit import (NSApplication, NSBackingStoreBuffered, NSBorderlessWindowMas
     NSView)
 from Foundation import NSObject, NSTimer
 from Quartz import (CALayer, CABasicAnimation, CAMediaTimingFunction,
-    kCAMediaTimingFunctionEaseInEaseOut, kCAFillModeForwards)
+    kCAMediaTimingFunctionEaseInEaseOut, kCAFillModeForwards, CACurrentMediaTime)
 from objc import python_method
 
 DATA_DIR    = os.environ.get("APP_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
@@ -74,8 +74,7 @@ class WaveformView(NSView):
             anim.setDuration_(ANIM_DUR)
             anim.setAutoreverses_(True)
             anim.setRepeatCount_(1e9)
-            anim.setBeginTime_(bar.convertTime_fromLayer_(
-                CALayer.layer().currentMediaTime() + i * (ANIM_DUR / BAR_COUNT), None))
+            anim.setBeginTime_(CACurrentMediaTime() + i * (ANIM_DUR / BAR_COUNT))
             timing = CAMediaTimingFunction.functionWithName_(kCAMediaTimingFunctionEaseInEaseOut)
             anim.setTimingFunction_(timing)
             bar.addAnimation_forKey_(anim, "wave")

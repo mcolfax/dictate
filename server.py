@@ -143,16 +143,17 @@ def play_sound(name):
 
 # ── OVERLAY ───────────────────────────────────────────────────────────────────
 
-def _send_overlay(text: str):
-    """Send a text update to the overlay subprocess via Unix socket."""
+def _send_overlay(text: str) -> bool:
+    """Send a text update to the overlay subprocess via Unix socket. Returns True on success."""
     try:
         conn = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        conn.settimeout(0.2)
+        conn.settimeout(0.5)
         conn.connect(OVERLAY_SOCKET)
         conn.sendall(json.dumps({"text": text}).encode("utf-8"))
         conn.close()
+        return True
     except Exception:
-        pass  # Overlay not running or not ready — silently ignore
+        return False
 
 def _build_overlay_bundle():
     """Build ~/.dictate/Overlay.app if missing or overlay.py is newer."""
@@ -213,10 +214,16 @@ def show_overlay():
 
 def notify_overlay(text: str):
     state["overlay_text"] = text  # Keep state in sync for /api/status
-    if config.get("overlay_enabled", True):
-        global _overlay_proc
-        if _overlay_proc is None or _overlay_proc.poll() is not None:
-            show_overlay()  # Restart if dead
+    if not config.get("overlay_enabled", True):
+        return
+    global _overlay_proc
+    # Try sending; if it fails, kill any stale process and restart
+    if not _send_overlay(text):
+        if _overlay_proc is not None:
+            try: _overlay_proc.kill()
+            except Exception: pass
+        _overlay_proc = None
+        show_overlay()
         _send_overlay(text)
 
 def hide_overlay_display():
@@ -582,8 +589,11 @@ def handle_trigger_release():
         threading.Thread(target=stop_and_transcribe, daemon=True).start()
 
 def handle_ui_shortcut():
-    """Open the UI in the default browser."""
-    subprocess.run(["open", "http://127.0.0.1:5001"])
+    """Open the settings window."""
+    settings_py = os.path.join(_DATA_DIR, "settings_window.py")
+    if not os.path.exists(settings_py):
+        settings_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings_window.py")
+    subprocess.Popen([sys.executable, settings_py])
 
 # ── KEYBOARD LISTENER ─────────────────────────────────────────────────────────
 

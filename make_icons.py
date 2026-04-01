@@ -76,7 +76,7 @@ pixels = make_pixels(
 write_png(APP_DIR / "icon_menubar.png", 22, 22, pixels)
 print("✅ icon_menubar.png")
 
-# ── Menu bar icon ON state (amber bars) ──
+# ── Menu bar icon ON state (amber bars, static) ──
 pixels = make_pixels(
     22, 22,
     bg=(0, 0, 0, 0),
@@ -85,6 +85,16 @@ pixels = make_pixels(
 )
 write_png(APP_DIR / "icon_menubar_on.png", 22, 22, pixels)
 print("✅ icon_menubar_on.png")
+
+# ── Menu bar animation frames (6 frames, amber, wave cycles) ──
+import math
+ANIM_FRAMES = 6
+for frame in range(ANIM_FRAMES):
+    phase = (2 * math.pi * frame) / ANIM_FRAMES
+    bars = [0.2 + 0.6 * (0.5 + 0.5 * math.sin(phase + i * 0.9)) for i in range(len(WAVEFORM))]
+    pixels = make_pixels(22, 22, bg=(0,0,0,0), bars=bars, bar_color=(245, 158, 11, 255))
+    write_png(APP_DIR / f"icon_menubar_anim_{frame}.png", 22, 22, pixels)
+print(f"✅ icon_menubar_anim_0..{ANIM_FRAMES-1}.png")
 
 # ── Dock icon (512x512, dark bg, amber bars) ──
 DOCK_SIZE = 512

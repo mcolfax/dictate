@@ -42,6 +42,8 @@ class DictateApp(rumps.App):
         self._ollama_proc   = None
         self._update_version = None
         self._current_icon  = "icon_menubar.png"
+        self._anim_frame    = 0
+        self._anim_frames   = 6
         self._setup_done    = is_setup_complete()
 
         _icon_path  = os.path.join(APP_RESOURCES, "icon_menubar.png")
@@ -183,7 +185,6 @@ class DictateApp(rumps.App):
         for _ in range(20):
             try:
                 urllib.request.urlopen("http://127.0.0.1:5001", timeout=1)
-                self._open_settings_window()
                 self.template = True
                 self.icon = os.path.join(APP_RESOURCES, "icon_menubar.png")
                 break
@@ -200,12 +201,20 @@ class DictateApp(rumps.App):
                 enabled   = data.get("enabled", False)
                 recording = data.get("recording", False)
 
-                new_icon  = "icon_menubar_on.png" if recording else "icon_menubar.png"
-
-                if new_icon != self._current_icon:
-                    self._current_icon = new_icon
-                    self.template = not recording
-                    self.icon = os.path.join(APP_RESOURCES, new_icon)
+                if recording:
+                    # Cycle animation frames
+                    frame_icon = f"icon_menubar_anim_{self._anim_frame}.png"
+                    self._anim_frame = (self._anim_frame + 1) % self._anim_frames
+                    if self._current_icon != "recording":
+                        self._current_icon = "recording"
+                        self.template = False  # Don't apply template tint — amber is intentional
+                    self.icon = os.path.join(APP_RESOURCES, frame_icon)
+                else:
+                    if self._current_icon != "icon_menubar.png":
+                        self._current_icon = "icon_menubar.png"
+                        self._anim_frame = 0
+                        self.template = True
+                        self.icon = os.path.join(APP_RESOURCES, "icon_menubar.png")
 
                 if enabled != self._enabled:
                     self._enabled = enabled
@@ -213,7 +222,7 @@ class DictateApp(rumps.App):
 
             except Exception:
                 pass
-            time.sleep(0.5)
+            time.sleep(0.15)  # ~6 fps animation
 
     # ── UPDATE CHECKING ───────────────────────────────────────────────────────
 
