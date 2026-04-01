@@ -76,6 +76,7 @@ cp "$RESOURCES/icon.icns" "$RESOURCES/icon.icns"
 
 # Copy Python source files into the bundle
 cp "$SCRIPT_DIR/server.py"     "$RESOURCES/"
+cp "$SCRIPT_DIR/overlay.py"    "$RESOURCES/"
 cp "$SCRIPT_DIR/app.py"        "$RESOURCES/"
 cp "$SCRIPT_DIR/make_icons.py" "$RESOURCES/"
 

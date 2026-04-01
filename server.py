@@ -5,7 +5,7 @@ New features: real-time overlay, language selection, UI shortcut, onboarding, da
 """
 
 from flask import Flask, jsonify, request
-import logging, threading, json, os, tempfile, subprocess, urllib.request, time, re
+import logging, threading, json, os, sys, tempfile, subprocess, urllib.request, time, re, socket as _socket
 import numpy as np, sounddevice as sd, scipy.io.wavfile as wavfile
 from pynput import keyboard as kb
 from pynput import mouse as ms
@@ -120,8 +120,11 @@ _stop_partial      = threading.Event()
 _kb_listener       = None
 _ms_listener       = None
 _lock              = threading.Lock()
+_hold_active       = False  # True while hold key/button is physically down
 _last_sound_time   = 0.0
 _persistent_stream = None
+_overlay_proc      = None
+OVERLAY_SOCKET     = os.path.join(_DATA_DIR, "overlay.sock")
 
 # ── SOUND ─────────────────────────────────────────────────────────────────────
 
@@ -140,22 +143,85 @@ def play_sound(name):
 
 # ── OVERLAY ───────────────────────────────────────────────────────────────────
 
-def show_overlay():
-    if not config.get("overlay_enabled", True): return
+def _send_overlay(text: str):
+    """Send a text update to the overlay subprocess via Unix socket."""
     try:
-        subprocess.Popen(["osascript", "-e", '''
-            tell application "System Events"
-                set frontApp to name of first application process whose frontmost is true
-            end tell
-        '''], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        conn = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        conn.settimeout(0.2)
+        conn.connect(OVERLAY_SOCKET)
+        conn.sendall(json.dumps({"text": text}).encode("utf-8"))
+        conn.close()
     except Exception:
-        pass
+        pass  # Overlay not running or not ready — silently ignore
 
-def notify_overlay(text):
-    state["overlay_text"] = text
+def _build_overlay_bundle():
+    """Build ~/.dictate/Overlay.app if missing or overlay.py is newer."""
+    bundle  = os.path.join(_DATA_DIR, "Overlay.app")
+    macos   = os.path.join(bundle, "Contents", "MacOS")
+    exe     = os.path.join(macos, "Overlay")
+    plist   = os.path.join(bundle, "Contents", "Info.plist")
+    script  = os.path.join(_DATA_DIR, "overlay.py")
+
+    needs_build = (
+        not os.path.exists(exe) or
+        not os.path.exists(plist) or
+        (os.path.exists(script) and os.path.getmtime(script) > os.path.getmtime(exe))
+    )
+    if not needs_build:
+        return exe
+
+    os.makedirs(macos, exist_ok=True)
+    with open(plist, "w") as f:
+        f.write("""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>Overlay</string>
+    <key>CFBundleIdentifier</key><string>com.dictate.overlay</string>
+    <key>CFBundleName</key><string>DictateOverlay</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>""")
+
+    python_exe = os.path.abspath(sys.executable)
+    with open(exe, "w") as f:
+        f.write(f"""#!/bin/bash
+export APP_DATA_DIR="{_DATA_DIR}"
+exec "{python_exe}" "{script}"
+""")
+    os.chmod(exe, 0o755)
+    return exe
+
+def show_overlay():
+    """Start the overlay subprocess via a mini .app bundle (no dock icon)."""
+    global _overlay_proc
+    if not config.get("overlay_enabled", True):
+        return
+    if _overlay_proc is not None and _overlay_proc.poll() is None:
+        return  # Already running
+    try:
+        exe = _build_overlay_bundle()
+        _overlay_proc = subprocess.Popen(
+            [exe],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(0.5)  # Wait for socket to bind
+    except Exception as e:
+        print(f"⚠️  Overlay launch error: {e}")
+
+def notify_overlay(text: str):
+    state["overlay_text"] = text  # Keep state in sync for /api/status
+    if config.get("overlay_enabled", True):
+        global _overlay_proc
+        if _overlay_proc is None or _overlay_proc.poll() is not None:
+            show_overlay()  # Restart if dead
+        _send_overlay(text)
 
 def hide_overlay_display():
     state["overlay_text"] = ""
+    _send_overlay("")
 
 # ── FRONTMOST APP ─────────────────────────────────────────────────────────────
 
@@ -223,12 +289,20 @@ def _partial_transcribe_worker():
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                         wavfile.write(f.name, SAMPLE_RATE, audio)
                         tmp = f.name
-                    import mlx_whisper
+                    import sys
                     lang = config.get("transcribe_language") or None
-                    kwargs = {"path_or_hq_mlx_model": None} if False else {}
-                    result = mlx_whisper.transcribe(tmp, language=lang) if lang else mlx_whisper.transcribe(tmp)
+                    lang_arg = f', language="{lang}"' if lang else ''
+                    cmd = [sys.executable, "-c", f"""
+import mlx_whisper, json, sys
+result = mlx_whisper.transcribe(sys.argv[1]{lang_arg})
+print(json.dumps({{"text": result["text"]}}))
+""", tmp]
+                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                     os.unlink(tmp)
-                    partial = result["text"].strip()
+                    if proc.returncode != 0:
+                        last_chunk_time = now
+                        continue
+                    partial = json.loads(proc.stdout.strip())["text"].strip()
                     if partial:
                         notify_overlay(partial)
                         state["partial_chunks"] = [partial]
@@ -253,7 +327,7 @@ def _record_worker():
             all_frames.append(chunk.copy())
             state["_recorded_frames"] = all_frames  # Keep updated for partial thread
 
-            if config.get("pause_detection", True):
+            if config.get("pause_detection", True) and config.get("mode") not in ("toggle", "hold"):
                 rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
                 if rms > 200:
                     _last_sound_time = time.time()
@@ -305,10 +379,12 @@ def stop_and_transcribe():
         _recording_thread.join(timeout=2)
     _close_stream()
     play_sound("stop")
-    hide_overlay_display()
+    notify_overlay("Processing…")
 
     frames = state.get("_recorded_frames", [])
-    if not frames: return
+    if not frames:
+        hide_overlay_display()
+        return
     state["transcribing"] = True
     print("⏳ Transcribing…")
     audio_data = np.concatenate(frames, axis=0).flatten()
@@ -318,18 +394,18 @@ def stop_and_transcribe():
         tmp_path = f.name
 
     try:
-        # Run whisper in subprocess to avoid Python 3.14 Metal GPU segfault
-        import sys, json as _json
+        import sys as _sys
         lang = config.get("transcribe_language") or None
-        cmd = [sys.executable, "-c", f"""
+        lang_arg = f', language="{lang}"' if lang else ''
+        cmd = [_sys.executable, "-c", f"""
 import mlx_whisper, json, sys
-result = mlx_whisper.transcribe(sys.argv[1]{', language="' + lang + '"' if lang else ''})
+result = mlx_whisper.transcribe(sys.argv[1]{lang_arg})
 print(json.dumps({{"text": result["text"], "language": result.get("language", "en")}}))
 """, tmp_path]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
             raise Exception(f"Whisper failed: {proc.stderr[-200:]}")
-        result = _json.loads(proc.stdout.strip())
+        result = json.loads(proc.stdout.strip())
         raw_text = result["text"].strip()
         detected_lang = result.get("language", "en")
 
@@ -341,8 +417,8 @@ print(json.dumps({{"text": result["text"], "language": result.get("language", "e
         print(f"📝 Raw: {raw_text} (lang: {detected_lang})")
 
         paste_lang = config.get("paste_language", "en")
-
         needs_translation = paste_lang and paste_lang != detected_lang
+
         if (config.get("cleanup", True) and len(corrected.split()) > 3) or needs_translation:
             final = cleanup_with_ollama(corrected, active_tone, detected_lang, paste_lang)
             print(f"✨ Final: {final}")
@@ -363,6 +439,7 @@ print(json.dumps({{"text": result["text"], "language": result.get("language", "e
     finally:
         os.unlink(tmp_path)
         state["transcribing"] = False
+        hide_overlay_display()
 
 # ── MIC TEST ──────────────────────────────────────────────────────────────────
 
@@ -415,6 +492,9 @@ def cleanup_with_ollama(text, tone_override=None, source_lang="en", target_lang=
             f"{src_name}: {text}\n"
             f"{dst_name}:"
         )
+        model = config["ollama_model"]
+        if model in ("qwen2.5:0.5b", "qwen2.5:1.5b", "llama3.2:1b"):
+            model = "llama3.2"
     else:
         prompt = (
             f"You are a transcription corrector. The text below was spoken aloud and auto-transcribed. "
@@ -424,10 +504,8 @@ def cleanup_with_ollama(text, tone_override=None, source_lang="en", target_lang=
             f"Output ONLY the corrected spoken words. {tone}\n\n"
             f"Transcription: {text}\n\nCorrected transcription:"
         )
-    # Use a more capable model for translation
-    model = config["ollama_model"]
-    if translating and model in ("qwen2.5:0.5b", "qwen2.5:1.5b", "llama3.2:1b"):
-        model = "llama3.2"  # Minimum reliable translation quality
+        model = config["ollama_model"]
+
     payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
     req = urllib.request.Request(OLLAMA_URL, data=payload,
                                   headers={"Content-Type": "application/json"})
@@ -451,8 +529,18 @@ def output_text(text):
 
 # ── TRIGGER LOGIC ─────────────────────────────────────────────────────────────
 
+def _hold_record():
+    """Start recording for hold mode, then immediately stop if key was released
+    before the recording thread had a chance to start (race condition fix)."""
+    start_recording()
+    if not _hold_active and state["recording"]:
+        stop_and_transcribe()
+
 def handle_trigger_press():
+    global _hold_active
     if not state["enabled"]: return
+    if _hold_active: return  # ignore key-repeat events in all modes
+    _hold_active = True
     if config["mode"] == "toggle":
         if not state["recording"]:
             threading.Thread(target=start_recording, daemon=True).start()
@@ -460,9 +548,11 @@ def handle_trigger_press():
             threading.Thread(target=stop_and_transcribe, daemon=True).start()
     elif config["mode"] == "hold":
         if not state["recording"]:
-            threading.Thread(target=start_recording, daemon=True).start()
+            threading.Thread(target=_hold_record, daemon=True).start()
 
 def handle_trigger_release():
+    global _hold_active
+    _hold_active = False
     if not state["enabled"]: return
     if config["mode"] == "hold" and state["recording"]:
         threading.Thread(target=stop_and_transcribe, daemon=True).start()
@@ -1063,11 +1153,7 @@ HTML = r"""<!DOCTYPE html>
   <!-- Language tab -->
   <div class="tab-panel" id="tab-language">
     <div class="app-hint" style="font-size:11px;color:var(--dim);margin-bottom:16px;line-height:1.6">
-      Whisper automatically detects what language you're speaking. Set a paste language to translate before pasting.<br><br>
-      <strong style="color:var(--amber)">⚠️ Translation note:</strong> When translating, Dictate automatically uses
-      <strong>llama3.2</strong> regardless of your selected Ollama model — smaller models produce unreliable translations.
-      Make sure <code style="background:var(--muted);padding:1px 5px;border-radius:3px">llama3.2</code> is installed:
-      <code style="background:var(--muted);padding:1px 5px;border-radius:3px">ollama pull llama3.2</code>
+      Whisper automatically detects what language you're speaking. Set a paste language to translate your speech before pasting.
     </div>
     <div class="settings-grid">
       <div class="field">
@@ -1551,6 +1637,15 @@ setInterval(fetchStatus, 1000);
 </html>"""
 
 if __name__ == "__main__":
+    import atexit
+
+    @atexit.register
+    def _cleanup_overlay():
+        global _overlay_proc
+        if _overlay_proc is not None and _overlay_proc.poll() is None:
+            _overlay_proc.terminate()
+
+    show_overlay()  # Pre-launch so it's ready when first recording starts
     start_listener()
     print("━" * 50)
     print("🎤  Dictation server ready")
