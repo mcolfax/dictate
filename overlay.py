@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-import json, os, socket, sys, threading
+import json, os, socket, sys, threading, math
 from AppKit import (NSApplication, NSBackingStoreBuffered, NSBorderlessWindowMask,
     NSColor, NSFont, NSMakeRect, NSPanel, NSTextAlignmentCenter, NSTextField,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorStationary,
-    NSFloatingWindowLevel, NSVisualEffectView, NSScreen, NSNonactivatingPanelMask)
+    NSFloatingWindowLevel, NSVisualEffectView, NSScreen, NSNonactivatingPanelMask,
+    NSView)
 from Foundation import NSObject, NSTimer
+from Quartz import (CALayer, CABasicAnimation, CAMediaTimingFunction,
+    kCAMediaTimingFunctionEaseInEaseOut, kCAFillModeForwards)
 from objc import python_method
 
 DATA_DIR    = os.environ.get("APP_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 SOCKET_PATH = os.path.join(DATA_DIR, "overlay.sock")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+
+BAR_COUNT   = 4
+BAR_W       = 3
+BAR_GAP     = 4
+BAR_MIN_H   = 4.0
+BAR_MAX_H   = 18.0
+ANIM_DUR    = 0.55
 
 def load_position():
     try:
@@ -28,12 +38,64 @@ def save_position(x, y):
     except Exception:
         pass
 
+
+class WaveformView(NSView):
+    """Animated bar waveform shown while recording."""
+
+    @python_method
+    def setup(self, width, height):
+        self.setWantsLayer_(True)
+        self._bars = []
+        total_w = BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP
+        start_x = (width - total_w) / 2
+        cy = height / 2
+
+        for i in range(BAR_COUNT):
+            bar = CALayer.layer()
+            bar.setCornerRadius_(BAR_W / 2)
+            bar.setBackgroundColor_(NSColor.labelColor().CGColor())
+            bx = start_x + i * (BAR_W + BAR_GAP)
+            bar.setFrame_(((bx, cy - BAR_MIN_H / 2), (BAR_W, BAR_MIN_H)))
+            bar.setAnchorPoint_((0.5, 0.5))
+            self.layer().addSublayer_(bar)
+            self._bars.append(bar)
+
+        self._animating = False
+
+    @python_method
+    def start_wave(self):
+        if self._animating:
+            return
+        self._animating = True
+        for i, bar in enumerate(self._bars):
+            anim = CABasicAnimation.animationWithKeyPath_("transform.scale.y")
+            anim.setFromValue_(1.0)
+            anim.setToValue_(BAR_MAX_H / BAR_MIN_H)
+            anim.setDuration_(ANIM_DUR)
+            anim.setAutoreverses_(True)
+            anim.setRepeatCount_(1e9)
+            anim.setBeginTime_(bar.convertTime_fromLayer_(
+                CALayer.layer().currentMediaTime() + i * (ANIM_DUR / BAR_COUNT), None))
+            timing = CAMediaTimingFunction.functionWithName_(kCAMediaTimingFunctionEaseInEaseOut)
+            anim.setTimingFunction_(timing)
+            bar.addAnimation_forKey_(anim, "wave")
+
+    @python_method
+    def stop_wave(self):
+        if not self._animating:
+            return
+        self._animating = False
+        for bar in self._bars:
+            bar.removeAnimationForKey_("wave")
+
+
 class OverlayDelegate(NSObject):
     def applicationDidFinishLaunching_(self, notification):
         self._pending_text = None
+        self._current_text = None
         self._lock = threading.Lock()
         saved_x, saved_y = load_position()
-        w, h = 420, 44
+        w, h = 200, 44
         if saved_x is not None and saved_y is not None:
             rect = NSMakeRect(saved_x, saved_y, w, h)
         else:
@@ -45,7 +107,7 @@ class OverlayDelegate(NSObject):
             rect, NSBorderlessWindowMask | NSNonactivatingPanelMask, NSBackingStoreBuffered, False)
         self._win.setLevel_(NSFloatingWindowLevel)
         self._win.setOpaque_(False)
-        self._win.setAlphaValue_(0.72)
+        self._win.setAlphaValue_(0.85)
         self._win.setBackgroundColor_(NSColor.clearColor())
         self._win.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary)
@@ -61,6 +123,7 @@ class OverlayDelegate(NSObject):
         vfx.layer().setMasksToBounds_(True)
         self._win.setContentView_(vfx)
 
+        # Mic icon (always visible)
         self._icon = NSTextField.alloc().initWithFrame_(NSMakeRect(14, 10, 24, 24))
         self._icon.setStringValue_("🎙")
         self._icon.setBezeled_(False); self._icon.setDrawsBackground_(False)
@@ -68,18 +131,27 @@ class OverlayDelegate(NSObject):
         self._icon.setFont_(NSFont.systemFontOfSize_(16.0))
         vfx.addSubview_(self._icon)
 
-        self._label = NSTextField.alloc().initWithFrame_(NSMakeRect(40, 8, w - 52, h - 14))
+        # Waveform bars (shown while listening)
+        wave_x = 44
+        wave_w = w - wave_x - 14
+        self._wave = WaveformView.alloc().initWithFrame_(NSMakeRect(wave_x, 0, wave_w, h))
+        self._wave.setup(wave_w, h)
+        vfx.addSubview_(self._wave)
+
+        # Text label (shown while processing)
+        self._label = NSTextField.alloc().initWithFrame_(NSMakeRect(44, 10, w - 58, h - 20))
         self._label.setStringValue_("")
         self._label.setBezeled_(False); self._label.setDrawsBackground_(False)
         self._label.setEditable_(False); self._label.setSelectable_(False)
-        self._label.setTextColor_(NSColor.labelColor())
-        self._label.setFont_(NSFont.systemFontOfSize_weight_(14.0, 0.3))
+        self._label.setTextColor_(NSColor.secondaryLabelColor())
+        self._label.setFont_(NSFont.systemFontOfSize_weight_(13.0, 0.0))
         self._label.setAlignment_(NSTextAlignmentCenter)
         self._label.setLineBreakMode_(3)
+        self._label.setHidden_(True)
         vfx.addSubview_(self._label)
 
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.1, self, "pollUpdates:", None, True)
+            0.05, self, "pollUpdates:", None, True)
         threading.Thread(target=self._socket_server, daemon=True).start()
 
     @python_method
@@ -90,14 +162,31 @@ class OverlayDelegate(NSObject):
         with self._lock:
             text = self._pending_text
             self._pending_text = None
-        if text is None: return
-        if text:
+        if text is None:
+            return
+        if text == self._current_text:
+            return
+        self._current_text = text
+
+        if text == "Listening…":
+            self._label.setHidden_(True)
+            self._wave.setHidden_(False)
+            self._wave.start_wave()
+            app = NSApplication.sharedApplication()
+            app.activateIgnoringOtherApps_(True)
+            self._win.orderFrontRegardless()
+            app.setActivationPolicy_(1)
+        elif text:
+            self._wave.stop_wave()
+            self._wave.setHidden_(True)
             self._label.setStringValue_(text)
+            self._label.setHidden_(False)
             app = NSApplication.sharedApplication()
             app.activateIgnoringOtherApps_(True)
             self._win.orderFrontRegardless()
             app.setActivationPolicy_(1)
         else:
+            self._wave.stop_wave()
             self._win.orderOut_(None)
             origin = self._win.frame().origin
             threading.Thread(target=save_position, args=(origin.x, origin.y), daemon=True).start()
@@ -124,7 +213,7 @@ class OverlayDelegate(NSObject):
 
 if __name__ == "__main__":
     app = NSApplication.sharedApplication()
-    app.setActivationPolicy_(1)  # accessory from the start — no dock icon
+    app.setActivationPolicy_(1)
     delegate = OverlayDelegate.alloc().init()
     app.setDelegate_(delegate)
     app.run()

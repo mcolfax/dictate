@@ -11,6 +11,7 @@ APP_RESOURCES   = os.environ.get("APP_RESOURCES", os.path.dirname(os.path.abspat
 APP_DATA_DIR    = os.environ.get("APP_DATA_DIR",  os.path.expanduser("~/.dictate"))
 VENV_PYTHON     = os.path.join(os.path.expanduser("~/Documents/dictation"), "venv", "bin", "python3")
 SERVER_PATH     = os.path.join(APP_RESOURCES, "server.py")
+SETTINGS_PATH   = os.path.join(APP_RESOURCES, "settings_window.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
@@ -182,7 +183,7 @@ class DictateApp(rumps.App):
         for _ in range(20):
             try:
                 urllib.request.urlopen("http://127.0.0.1:5001", timeout=1)
-                subprocess.run(["open", "http://127.0.0.1:5001"])
+                self._open_settings_window()
                 self.template = True
                 self.icon = os.path.join(APP_RESOURCES, "icon_menubar.png")
                 break
@@ -250,7 +251,7 @@ class DictateApp(rumps.App):
         if response != 1:
             return
         try:
-            files_to_update = ["server.py", "app.py", "make_icons.py"]
+            files_to_update = ["server.py", "overlay.py", "settings_window.py", "app.py", "make_icons.py"]
             for fname in files_to_update:
                 url  = f"{GITHUB_RAW}/{fname}"
                 dest = os.path.join(APP_RESOURCES, fname)
@@ -272,7 +273,10 @@ class DictateApp(rumps.App):
     # ── CONTROLS ──────────────────────────────────────────────────────────────
 
     def open_ui(self, _):
-        subprocess.run(["open", "http://127.0.0.1:5001"])
+        self._open_settings_window()
+
+    def _open_settings_window(self):
+        subprocess.Popen([VENV_PYTHON, SETTINGS_PATH])
 
     def toggle_dictation(self, _):
         try:

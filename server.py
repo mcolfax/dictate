@@ -22,7 +22,7 @@ CONFIG_FILE = os.path.join(_DATA_DIR, 'config.json')
 STATS_FILE  = os.path.join(_DATA_DIR, 'stats.json')
 SAMPLE_RATE     = 16000
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-APP_VERSION     = "2.0.0"
+APP_VERSION     = "1.4.3"
 GITHUB_RAW      = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -247,9 +247,31 @@ def apply_vocabulary(text):
 
 # ── AUDIO STREAM ──────────────────────────────────────────────────────────────
 
+def _check_mic_permission():
+    """Returns True if mic is authorized. Shows a dialog and returns False if denied."""
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
+        # 0=notDetermined (will prompt), 1=restricted, 2=denied, 3=authorized
+        if status == 2:
+            subprocess.Popen([
+                "osascript", "-e",
+                'display dialog "Dictate needs microphone access.\\n\\nGo to System Settings → Privacy & Security → Microphone and enable Dictate." '
+                'buttons {"Open Settings", "Cancel"} default button "Open Settings" with title "Microphone Access Required"\n'
+                'if button returned of result is "Open Settings" then\n'
+                '  do shell script "open \\"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone\\""\n'
+                'end if'
+            ])
+            return False
+        return True  # 0=notDetermined (macOS will prompt), 1=restricted, 3=authorized
+    except Exception:
+        return True  # Can't check — let sounddevice try and fail naturally
+
 def _ensure_stream():
     global _persistent_stream
     if _persistent_stream is None or not _persistent_stream.active:
+        if not _check_mic_permission():
+            return
         try:
             _persistent_stream = sd.InputStream(
                 samplerate=SAMPLE_RATE, channels=1,
@@ -258,6 +280,8 @@ def _ensure_stream():
             _persistent_stream.start()
         except Exception as e:
             print(f"⚠️  Stream init error: {e}")
+            if "invalid" in str(e).lower() or "permission" in str(e).lower():
+                _check_mic_permission()
 
 def _close_stream():
     global _persistent_stream

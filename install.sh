@@ -75,10 +75,11 @@ python3 "$SCRIPT_DIR/make_icons.py" --output "$RESOURCES"
 cp "$RESOURCES/icon.icns" "$RESOURCES/icon.icns"
 
 # Copy Python source files into the bundle
-cp "$SCRIPT_DIR/server.py"     "$RESOURCES/"
-cp "$SCRIPT_DIR/overlay.py"    "$RESOURCES/"
-cp "$SCRIPT_DIR/app.py"        "$RESOURCES/"
-cp "$SCRIPT_DIR/make_icons.py" "$RESOURCES/"
+cp "$SCRIPT_DIR/server.py"          "$RESOURCES/"
+cp "$SCRIPT_DIR/overlay.py"         "$RESOURCES/"
+cp "$SCRIPT_DIR/settings_window.py" "$RESOURCES/"
+cp "$SCRIPT_DIR/app.py"             "$RESOURCES/"
+cp "$SCRIPT_DIR/make_icons.py"      "$RESOURCES/"
 
 # Write default config into app data dir
 cat > "$APP_DIR/config.json" << CONFIG
