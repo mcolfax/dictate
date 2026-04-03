@@ -50,7 +50,12 @@ macOS will prompt for two permissions — both are required:
 
 - **Microphone** — for voice capture
 - **Accessibility** — for hotkey detection and text injection
-  *(System Settings → Privacy & Security → Accessibility → enable Dictate)*
+
+  Go to System Settings → Privacy & Security → Accessibility → click `+` → press `Cmd+Shift+G` → paste:
+  ```
+  /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app
+  ```
+  Enable the toggle, then reopen Dictate. (A dialog will guide you through this on first launch.)
 
 ---
 

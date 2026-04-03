@@ -22,7 +22,7 @@ CONFIG_FILE = os.path.join(_DATA_DIR, 'config.json')
 STATS_FILE  = os.path.join(_DATA_DIR, 'stats.json')
 SAMPLE_RATE     = 16000
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-APP_VERSION     = "1.4.9"
+APP_VERSION     = "1.5.0"
 GITHUB_RAW      = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -60,6 +60,7 @@ DEFAULT_CONFIG = {
     "overlay_y":        None,
     "theme":            "system",  # "system", "dark", "light"
     "onboarding_done":  False,
+    "mic_device":       None,      # None = system default; device name string to override
 }
 
 def load_config():
@@ -274,15 +275,31 @@ def _check_mic_permission():
     except Exception:
         return True  # Can't check — let sounddevice try and fail naturally
 
+def _resolve_mic_device():
+    """Return the sounddevice device index for the configured mic, or None for system default."""
+    name = config.get("mic_device")
+    if not name:
+        return None
+    try:
+        devices = sd.query_devices()
+        for i, d in enumerate(devices):
+            if d["max_input_channels"] > 0 and d["name"] == name:
+                return i
+    except Exception:
+        pass
+    return None  # Fall back to system default if not found
+
 def _ensure_stream():
     global _persistent_stream
     if _persistent_stream is None or not _persistent_stream.active:
         if not _check_mic_permission():
             return
         try:
+            device = _resolve_mic_device()
             _persistent_stream = sd.InputStream(
                 samplerate=SAMPLE_RATE, channels=1,
-                dtype="int16", blocksize=1600
+                dtype="int16", blocksize=1600,
+                device=device,
             )
             _persistent_stream.start()
         except Exception as e:
@@ -680,8 +697,37 @@ def on_ms_click(x, y, button, pressed):
         if pressed: handle_trigger_press()
         else:       handle_trigger_release()
 
+def _check_accessibility():
+    """Show a dialog if this process lacks Accessibility permission."""
+    try:
+        from ApplicationServices import AXIsProcessTrustedWithOptions
+        if not AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": False}):
+            import sys as _sys
+            py_app = (
+                "/Library/Developer/CommandLineTools/Library/Frameworks/"
+                "Python3.framework/Versions/3.9/Resources/Python.app"
+            )
+            script = f"""
+display dialog "Dictate needs Accessibility permission to detect your hotkey.
+
+Please add Python to Accessibility:
+  1. System Settings → Privacy & Security → Accessibility
+  2. Click + then press Cmd+Shift+G
+  3. Paste: {py_app}
+  4. Click Open, enable the toggle
+  5. Restart Dictate" ¬
+buttons {{"Open Settings", "Later"}} default button "Open Settings" ¬
+with title "Accessibility Permission Required" with icon caution
+if button returned of result is "Open Settings" then
+  do shell script "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'"
+end if"""
+            subprocess.Popen(["osascript", "-e", script])
+    except Exception:
+        pass
+
 def start_listener():
     global _kb_listener, _ms_listener
+    _check_accessibility()
     for l in [_kb_listener, _ms_listener]:
         if l:
             try: l.stop()
@@ -736,6 +782,23 @@ def api_mic_start():
 @app.route("/api/mic/stop", methods=["POST"])
 def api_mic_stop():
     stop_mic_test(); return jsonify({"mic_testing": False})
+
+@app.route("/api/mic/devices", methods=["GET"])
+def api_mic_devices():
+    try:
+        devices = sd.query_devices()
+        default_in = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
+        result = []
+        for i, d in enumerate(devices):
+            if d["max_input_channels"] > 0:
+                result.append({
+                    "index": i,
+                    "name": d["name"],
+                    "default": (i == default_in),
+                })
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/vocab", methods=["GET"])
 def api_vocab_get(): return jsonify(config.get("vocabulary", []))
@@ -1171,7 +1234,18 @@ HTML = r"""<!DOCTYPE html>
       <button class="tone-btn" data-tone="concise"      onclick="setTone('concise')">Concise</button>
     </div>
 
-    <div class="section-label">Microphone Test</div>
+    <div class="section-label">Microphone</div>
+    <div class="settings-grid" style="margin-bottom:16px">
+      <div class="setting-item">
+        <div class="setting-info">
+          <div class="setting-name">Input Device</div>
+          <div class="setting-desc">Microphone used for recording</div>
+        </div>
+        <select class="select-input" id="micDeviceSelect" onchange="saveMicDevice()">
+          <option value="">System Default</option>
+        </select>
+      </div>
+    </div>
     <div class="mic-section">
       <div class="mic-header">
         <span class="field-label" style="margin:0">Input Level</span>
@@ -1557,6 +1631,22 @@ async function toggleMicTest() {
   fetchStatus();
 }
 
+async function loadMicDevices() {
+  const sel = document.getElementById('micDeviceSelect');
+  const current = config.mic_device || '';
+  try {
+    const devices = await (await fetch('/api/mic/devices')).json();
+    sel.innerHTML = '<option value="">System Default</option>' +
+      devices.map(d => `<option value="${d.name}" ${d.name === current ? 'selected' : ''}>${d.name}${d.default ? ' (system default)' : ''}</option>`).join('');
+  } catch(e) { console.error('Could not load mic devices', e); }
+}
+
+async function saveMicDevice() {
+  const val = document.getElementById('micDeviceSelect').value;
+  config.mic_device = val || null;
+  await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mic_device: config.mic_device})});
+}
+
 function toggleCleanup() { cleanupEnabled = document.getElementById('cleanupToggle').checked; updateCleanupUI(); autoSave(); }
 function toggleClipboard() { clipboardOnly = document.getElementById('clipboardToggle').checked; updateClipboardUI(); autoSave(); }
 function toggleSound() { soundEnabled = document.getElementById('soundToggle').checked; updateSoundUI(); autoSave(); }
@@ -1665,6 +1755,7 @@ fetch('/api/version').then(r=>r.json()).then(d => {
   document.getElementById('versionFooter').textContent = 'v' + d.current;
 });
 fetchStatus();
+loadMicDevices();
 setInterval(fetchStatus, 1000);
 </script>
 </body>
