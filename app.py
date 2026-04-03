@@ -20,7 +20,7 @@ SETTINGS_PATH   = _runtime_path("settings_window.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
-CURRENT_VERSION = "1.5.2"
+CURRENT_VERSION = "1.5.3"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
@@ -248,8 +248,14 @@ class DictateApp(rumps.App):
                 urllib.request.urlopen("http://127.0.0.1:5001", timeout=1)
                 self.template = True
                 self.icon = os.path.join(APP_RESOURCES, "icon_menubar.png")
-                # Auto-open settings on first run after server is ready
-                self._open_settings_window()
+                # Auto-open only if onboarding hasn't been completed yet
+                try:
+                    with open(os.path.join(APP_DATA_DIR, "config.json")) as _f:
+                        _cfg = json.load(_f)
+                    if not _cfg.get("onboarding_done", False):
+                        self._open_settings_window()
+                except Exception:
+                    self._open_settings_window()
                 break
             except Exception:
                 time.sleep(0.5)
@@ -324,21 +330,40 @@ class DictateApp(rumps.App):
             return
         try:
             files_to_update = ["server.py", "overlay.py", "settings_window.py", "app.py", "make_icons.py"]
+            bundle_resources = "/Applications/Dictate.app/Contents/Resources"
             for fname in files_to_update:
                 url  = f"{GITHUB_RAW}/{fname}"
-                dest = os.path.join(APP_DATA_DIR, fname)  # write to ~/.dictate — no sudo needed
+                dest = os.path.join(APP_DATA_DIR, fname)
                 data = urllib.request.urlopen(url, timeout=15).read()
                 with open(dest, "wb") as f:
                     f.write(data)
+                # Also refresh the app bundle so the launcher picks up new code
+                bundle_dest = os.path.join(bundle_resources, fname)
+                if os.path.isdir(bundle_resources):
+                    try:
+                        with open(bundle_dest, "wb") as f:
+                            f.write(data)
+                    except Exception:
+                        pass  # non-fatal — ~/.dictate/ copy is the live one
             # Regenerate animation icons
             subprocess.run([VENV_PYTHON, os.path.join(APP_DATA_DIR, "make_icons.py")],
                            cwd=APP_DATA_DIR, capture_output=True)
+            # Clean up settings window before restart
+            import signal as _sig
+            try:
+                r = subprocess.run(["pgrep", "-f", "settings_window.py"], capture_output=True, text=True)
+                for pid in r.stdout.strip().splitlines():
+                    try: os.kill(int(pid), _sig.SIGTERM)
+                    except Exception: pass
+            except Exception: pass
+            try: os.unlink("/tmp/dictate_settings.lock")
+            except Exception: pass
             if self._server_proc:  self._server_proc.terminate()
             if self._ollama_proc:  self._ollama_proc.terminate()
             subprocess.Popen(["open", "/Applications/Dictate.app"])
             rumps.quit_application()
         except Exception as e:
-            rumps.alert("Update Failed", f"Could not download update. Check your internet connection and try again.")
+            rumps.alert("Update Failed", "Could not download update. Check your internet connection and try again.")
 
     # ── CONTROLS ──────────────────────────────────────────────────────────────
 

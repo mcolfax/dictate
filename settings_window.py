@@ -3,7 +3,7 @@
 settings_window.py — Native macOS settings window for Dictate.
 Hosts the existing Flask web UI in a WKWebView with a clean title-bar-integrated look.
 """
-import os, sys, signal, urllib.request
+import os, sys, signal, subprocess, urllib.request
 from AppKit import (NSApplication, NSBackingStoreBuffered,
     NSMakeRect, NSMakeSize, NSWindow, NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSVisualEffectView, NSClosableWindowMask, NSTitledWindowMask,
@@ -95,12 +95,40 @@ class SettingsDelegate(NSObject):
             self._wv.loadRequest_(req)
             self._win.makeKeyAndOrderFront_(None)
             NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            self._check_mic_permission()
         except Exception:
             self._load_attempts += 1
             if self._load_attempts > 50:  # 15 s — server not up, give up
                 timer.invalidate()
                 _clear_lock()
                 NSApplication.sharedApplication().terminate_(None)
+
+    def _check_mic_permission(self):
+        try:
+            from AVFoundation import (AVCaptureDevice, AVMediaTypeAudio)
+            status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
+            if status == 0:  # Not determined — request
+                def _handler(granted):
+                    if not granted:
+                        self._prompt_mic_settings()
+                AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+                    AVMediaTypeAudio, _handler)
+            elif status == 2:  # Denied
+                self._prompt_mic_settings()
+        except Exception:
+            pass
+
+    def _prompt_mic_settings(self):
+        script = (
+            'display dialog "Dictate needs Microphone access to record your voice.\\n\\n'
+            'Go to System Settings → Privacy & Security → Microphone and enable Dictate." '
+            'with title "Microphone Permission Required" '
+            'buttons {"Open System Settings", "Later"} default button 1'
+        )
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if "Open System Settings" in result.stdout:
+            subprocess.Popen(["open",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"])
 
     def webView_didFinishNavigation_(self, wv, nav):
         js = """
