@@ -20,7 +20,7 @@ SETTINGS_PATH   = _runtime_path("settings_window.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
-CURRENT_VERSION = "1.5.3"
+CURRENT_VERSION = "1.5.4"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
@@ -101,6 +101,7 @@ class DictateApp(rumps.App):
             self.toggle_item,
             None,
             self.update_item,
+            rumps.MenuItem("About Dictate", callback=self.about),
             rumps.MenuItem("Quit", callback=self.quit_app),
         ]
 
@@ -248,14 +249,7 @@ class DictateApp(rumps.App):
                 urllib.request.urlopen("http://127.0.0.1:5001", timeout=1)
                 self.template = True
                 self.icon = os.path.join(APP_RESOURCES, "icon_menubar.png")
-                # Auto-open only if onboarding hasn't been completed yet
-                try:
-                    with open(os.path.join(APP_DATA_DIR, "config.json")) as _f:
-                        _cfg = json.load(_f)
-                    if not _cfg.get("onboarding_done", False):
-                        self._open_settings_window()
-                except Exception:
-                    self._open_settings_window()
+                self._open_settings_window()
                 break
             except Exception:
                 time.sleep(0.5)
@@ -263,7 +257,20 @@ class DictateApp(rumps.App):
     # ── POLL STATE ────────────────────────────────────────────────────────────
 
     def _poll_state(self):
+        _crash_notified = False
         while True:
+            # Detect server crash and restart
+            if self._server_proc and self._server_proc.poll() is not None:
+                if not _crash_notified:
+                    _crash_notified = True
+                    rumps.notification("Dictate", "Restarting…",
+                        "The transcription server stopped unexpectedly.", sound=False)
+                self._server_proc = None
+                threading.Thread(target=self._start_backend, daemon=True).start()
+                time.sleep(3)
+                _crash_notified = False
+                continue
+
             try:
                 resp      = urllib.request.urlopen("http://127.0.0.1:5001/api/status", timeout=1)
                 data      = json.loads(resp.read())
@@ -366,6 +373,17 @@ class DictateApp(rumps.App):
             rumps.alert("Update Failed", "Could not download update. Check your internet connection and try again.")
 
     # ── CONTROLS ──────────────────────────────────────────────────────────────
+
+    def about(self, _):
+        rumps.alert(
+            title=f"Dictate  v{CURRENT_VERSION}",
+            message=(
+                "Free, local AI dictation for macOS.\n"
+                "No cloud. No subscription. No data leaves your machine.\n\n"
+                "github.com/mcolfax/dictate"
+            ),
+            ok="Close"
+        )
 
     def open_ui(self, _):
         self._open_settings_window()

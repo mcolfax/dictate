@@ -15,14 +15,21 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-STATS_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stats.json')
 _DATA_DIR   = os.environ.get("APP_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE = os.path.join(_DATA_DIR, 'config.json')
 STATS_FILE  = os.path.join(_DATA_DIR, 'stats.json')
+ERROR_LOG   = os.path.join(_DATA_DIR, 'error.log')
+LAUNCH_AGENT_PLIST = os.path.expanduser("~/Library/LaunchAgents/com.dictate.app.plist")
+
+def _log_error(msg):
+    try:
+        with open(ERROR_LOG, "a") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
 SAMPLE_RATE     = 16000
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-APP_VERSION     = "1.5.3"
+APP_VERSION     = "1.5.4"
 GITHUB_RAW      = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -61,6 +68,8 @@ DEFAULT_CONFIG = {
     "theme":            "system",  # "system", "dark", "light"
     "onboarding_done":  False,
     "mic_device":       None,      # None = system default; device name string to override
+    "remove_fillers":   False,     # Strip um/uh/er filler words
+    "launch_at_login":  False,
 }
 
 def load_config():
@@ -253,6 +262,18 @@ def apply_vocabulary(text):
             text = re.sub(r'(?i)\b' + re.escape(src) + r'\b', dst, text)
     return text
 
+_FILLER_RE = re.compile(
+    r'\b(um+h?|uh+|er+|ah+|hmm+|mhm+)\b[,\s]*'
+    r'|\b(like|you\s+know|basically|literally|right|okay|so)\b(?=\s*,|\s+(?:um|uh|like|and|but|I|we|it|the|a)\b)',
+    re.IGNORECASE
+)
+
+def remove_fillers(text):
+    if not config.get("remove_fillers", False):
+        return text
+    cleaned = _FILLER_RE.sub(' ', text)
+    return re.sub(r'[ \t]+', ' ', cleaned).strip()
+
 # ── AUDIO STREAM ──────────────────────────────────────────────────────────────
 
 def _check_mic_permission():
@@ -337,10 +358,9 @@ def _partial_transcribe_worker():
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                         wavfile.write(f.name, SAMPLE_RATE, audio)
                         tmp = f.name
-                    import sys
                     lang = config.get("transcribe_language") or None
                     lang_arg = f', language="{lang}"' if lang else ''
-                    cmd = [sys.executable, "-c", f"""
+                    cmd = ["arch", "-arm64", sys.executable, "-c", f"""
 import mlx_whisper, json, sys
 result = mlx_whisper.transcribe(sys.argv[1]{lang_arg})
 print(json.dumps({{"text": result["text"]}}))
@@ -459,6 +479,7 @@ print(json.dumps({{"text": result["text"], "language": result.get("language", "e
 
         if not raw_text: return
         corrected   = apply_vocabulary(raw_text)
+        corrected   = remove_fillers(corrected)
         active_app  = get_frontmost_app()
         app_tones   = config.get("app_tones", {})
         active_tone = app_tones.get(active_app, config.get("tone", "neutral"))
@@ -482,10 +503,12 @@ print(json.dumps({{"text": result["text"], "language": result.get("language", "e
         state["history"] = state["history"][:30]
         play_sound("done")
     except Exception as e:
+        _log_error(f"Transcription: {e}")
         print(f"❌ Error: {e}")
         play_sound("error")
     finally:
-        os.unlink(tmp_path)
+        try: os.unlink(tmp_path)
+        except Exception: pass
         state["transcribing"] = False
         hide_overlay_display()
 
@@ -626,6 +649,9 @@ def get_ui_hotkey():
     try:
         return getattr(kb.Key, ui)
     except AttributeError:
+        # Character key (e.g. backtick)
+        if len(ui) == 1:
+            return kb.KeyCode.from_char(ui)
         return None
 
 def _key_label(key):
@@ -843,6 +869,52 @@ def api_version():
 @app.route("/api/onboarding/complete", methods=["POST"])
 def api_onboarding_complete():
     config["onboarding_done"] = True; save_config(config)
+    return jsonify({"ok": True})
+
+@app.route("/api/launch_at_login", methods=["GET", "POST"])
+def api_launch_at_login():
+    if request.method == "GET":
+        return jsonify({"enabled": os.path.exists(LAUNCH_AGENT_PLIST)})
+    enabled = (request.json or {}).get("enabled", False)
+    if enabled:
+        os.makedirs(os.path.dirname(LAUNCH_AGENT_PLIST), exist_ok=True)
+        with open(LAUNCH_AGENT_PLIST, "w") as f:
+            f.write(
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"'
+                ' "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                '<plist version="1.0"><dict>\n'
+                '  <key>Label</key><string>com.dictate.app</string>\n'
+                '  <key>ProgramArguments</key>\n'
+                '  <array><string>/usr/bin/open</string>'
+                '<string>-a</string><string>Dictate</string></array>\n'
+                '  <key>RunAtLoad</key><true/>\n'
+                '</dict></plist>\n'
+            )
+        subprocess.run(["launchctl", "load", LAUNCH_AGENT_PLIST], capture_output=True)
+    else:
+        try:
+            subprocess.run(["launchctl", "unload", LAUNCH_AGENT_PLIST], capture_output=True)
+            os.unlink(LAUNCH_AGENT_PLIST)
+        except Exception:
+            pass
+    config["launch_at_login"] = enabled
+    save_config(config)
+    return jsonify({"enabled": os.path.exists(LAUNCH_AGENT_PLIST)})
+
+@app.route("/api/errors")
+def api_errors():
+    try:
+        with open(ERROR_LOG) as f:
+            lines = f.readlines()
+        return jsonify({"log": "".join(lines[-50:])})  # last 50 entries
+    except Exception:
+        return jsonify({"log": ""})
+
+@app.route("/api/errors/clear", methods=["POST"])
+def api_errors_clear():
+    try: open(ERROR_LOG, "w").close()
+    except Exception: pass
     return jsonify({"ok": True})
 
 @app.route("/")
@@ -1231,6 +1303,23 @@ HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
+    <div class="settings-grid">
+      <div class="field">
+        <div class="field-label">Launch at Login</div>
+        <div class="toggle-row">
+          <span class="toggle-label" id="launchAtLoginLabel">Off</span>
+          <label class="toggle-switch"><input type="checkbox" id="launchAtLoginToggle" onchange="toggleLaunchAtLogin()"><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Remove Filler Words</div>
+        <div class="toggle-row">
+          <span class="toggle-label" id="fillersLabel">Off</span>
+          <label class="toggle-switch"><input type="checkbox" id="fillersToggle" onchange="toggleFillers()"><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+    </div>
+
     <div class="section-label" style="margin-top:8px;">Cleanup Tone</div>
     <div class="tone-grid">
       <button class="tone-btn" data-tone="neutral"      onclick="setTone('neutral')">Neutral</button>
@@ -1575,6 +1664,18 @@ function applyStatus(data) {
     setTone(config.tone || 'neutral');
     updateLangExample();
 
+    // Launch at login
+    fetch('/api/launch_at_login').then(r=>r.json()).then(d => {
+      document.getElementById('launchAtLoginToggle').checked = d.enabled;
+      document.getElementById('launchAtLoginLabel').textContent = d.enabled ? 'On' : 'Off';
+    }).catch(()=>{});
+
+    // Filler removal
+    const fillersOn = config.remove_fillers === true;
+    document.getElementById('fillersToggle').checked = fillersOn;
+    document.getElementById('fillersLabel').textContent = fillersOn ? 'On — stripping um/uh/er…' : 'Off';
+    document.getElementById('fillersLabel').className = 'toggle-label' + (fillersOn ? '' : ' off');
+
     // Theme
     if (config.theme) { currentTheme = config.theme; applyTheme(currentTheme); }
 
@@ -1659,6 +1760,18 @@ async function saveMicDevice() {
   await fetch('/api/mic/reset', {method:'POST'}).catch(() => {});
 }
 
+async function toggleLaunchAtLogin() {
+  const enabled = document.getElementById('launchAtLoginToggle').checked;
+  document.getElementById('launchAtLoginLabel').textContent = enabled ? 'On' : 'Off';
+  await fetch('/api/launch_at_login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})});
+}
+async function toggleFillers() {
+  const enabled = document.getElementById('fillersToggle').checked;
+  document.getElementById('fillersLabel').textContent = enabled ? 'On — stripping um/uh/er…' : 'Off';
+  document.getElementById('fillersLabel').className = 'toggle-label' + (enabled ? '' : ' off');
+  config.remove_fillers = enabled;
+  await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({remove_fillers: enabled})});
+}
 function toggleCleanup() { cleanupEnabled = document.getElementById('cleanupToggle').checked; updateCleanupUI(); autoSave(); }
 function toggleClipboard() { clipboardOnly = document.getElementById('clipboardToggle').checked; updateClipboardUI(); autoSave(); }
 function toggleSound() { soundEnabled = document.getElementById('soundToggle').checked; updateSoundUI(); autoSave(); }
