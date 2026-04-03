@@ -20,7 +20,7 @@ SETTINGS_PATH   = _runtime_path("settings_window.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
-CURRENT_VERSION = "1.4.8"
+CURRENT_VERSION = "1.4.9"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
@@ -211,7 +211,7 @@ class DictateApp(rumps.App):
         for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
             env.pop(key, None)
         self._server_proc = subprocess.Popen(
-            [VENV_PYTHON, _runtime_path("server.py")],
+            ["arch", "-arm64", VENV_PYTHON, _runtime_path("server.py")],
             cwd=APP_DATA_DIR, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )

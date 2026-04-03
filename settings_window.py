@@ -63,6 +63,7 @@ class SettingsDelegate(NSObject):
         self._wv.setNavigationDelegate_(self)
         vfx.addSubview_(self._wv)
 
+        self._load_attempts = 0
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.3, self, "tryLoad:", None, True)
 
@@ -76,7 +77,11 @@ class SettingsDelegate(NSObject):
             self._win.makeKeyAndOrderFront_(None)
             NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         except Exception:
-            pass
+            self._load_attempts += 1
+            if self._load_attempts > 50:  # 15 seconds — server not up, give up
+                timer.invalidate()
+                _clear_lock()
+                NSApplication.sharedApplication().terminate_(None)
 
     def webView_didFinishNavigation_(self, wv, nav):
         js = """

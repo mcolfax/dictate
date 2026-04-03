@@ -22,7 +22,7 @@ CONFIG_FILE = os.path.join(_DATA_DIR, 'config.json')
 STATS_FILE  = os.path.join(_DATA_DIR, 'stats.json')
 SAMPLE_RATE     = 16000
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-APP_VERSION     = "1.4.8"
+APP_VERSION     = "1.4.9"
 GITHUB_RAW      = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -255,11 +255,11 @@ def apply_vocabulary(text):
 # ── AUDIO STREAM ──────────────────────────────────────────────────────────────
 
 def _check_mic_permission():
-    """Returns True if mic is authorized. Shows a dialog and returns False if denied."""
+    """Returns True if mic access is granted or undetermined. Shows dialog if denied."""
     try:
         from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
         status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
-        # 0=notDetermined (will prompt), 1=restricted, 2=denied, 3=authorized
+        # 0=notDetermined (let sounddevice prompt natively), 1=restricted, 2=denied, 3=authorized
         if status == 2:
             subprocess.Popen([
                 "osascript", "-e",
@@ -270,7 +270,7 @@ def _check_mic_permission():
                 'end if'
             ])
             return False
-        return True  # 0=notDetermined (macOS will prompt), 1=restricted, 3=authorized
+        return True  # notDetermined, restricted, or authorized — let sounddevice handle it
     except Exception:
         return True  # Can't check — let sounddevice try and fail naturally
 
@@ -428,7 +428,7 @@ def stop_and_transcribe():
         import sys as _sys
         lang = config.get("transcribe_language") or None
         lang_arg = f', language="{lang}"' if lang else ''
-        cmd = [_sys.executable, "-c", f"""
+        cmd = ["arch", "-arm64", _sys.executable, "-c", f"""
 import mlx_whisper, json, sys
 result = mlx_whisper.transcribe(sys.argv[1]{lang_arg})
 print(json.dumps({{"text": result["text"], "language": result.get("language", "en")}}))
@@ -593,7 +593,7 @@ def handle_ui_shortcut():
     settings_py = os.path.join(_DATA_DIR, "settings_window.py")
     if not os.path.exists(settings_py):
         settings_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings_window.py")
-    subprocess.Popen([sys.executable, settings_py])
+    subprocess.Popen(["arch", "-arm64", sys.executable, settings_py])
 
 # ── KEYBOARD LISTENER ─────────────────────────────────────────────────────────
 
