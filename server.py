@@ -29,7 +29,7 @@ def _log_error(msg):
         pass
 SAMPLE_RATE     = 16000
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-APP_VERSION     = "1.5.5"
+APP_VERSION     = "1.5.7"
 GITHUB_RAW      = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -45,9 +45,9 @@ LANGUAGES = {
 
 DEFAULT_CONFIG = {
     "mode":             "toggle",
-    "hotkey":           "alt_r",
-    "hotkey_label":     "Right Option (⌥)",
-    "hotkey_type":      "keyboard",
+    "hotkey":           "cmd+shift+alt",
+    "hotkey_label":     "⌘⇧⌥",
+    "hotkey_type":      "combo",
     "ui_shortcut":      None,
     "ui_shortcut_label": None,
     "whisper_model":    "mlx-community/whisper-small-mlx",
@@ -659,11 +659,63 @@ def handle_ui_shortcut():
 
 # ── KEYBOARD LISTENER ─────────────────────────────────────────────────────────
 
-def get_kb_hotkey():
-    try:
-        return getattr(kb.Key, config.get("hotkey", "alt_r"))
-    except AttributeError:
-        return kb.Key.alt_r
+# Keys that must never be used as a UI shortcut — they'd break normal typing/system.
+_BLOCKED_UI_KEYS = {
+    # Letters (a-z)
+    *[kb.KeyCode.from_char(c) for c in "abcdefghijklmnopqrstuvwxyz"],
+    # Digits via KeyCode
+    *[kb.KeyCode.from_char(c) for c in "0123456789"],
+    # Critical system / editing keys
+    kb.Key.space, kb.Key.enter, kb.Key.backspace, kb.Key.delete,
+    kb.Key.esc, kb.Key.tab,
+    kb.Key.up, kb.Key.down, kb.Key.left, kb.Key.right,
+    kb.Key.home, kb.Key.end, kb.Key.page_up, kb.Key.page_down,
+    kb.Key.cmd, kb.Key.cmd_r,
+    kb.Key.ctrl, kb.Key.ctrl_r,
+    kb.Key.shift, kb.Key.shift_r,
+    kb.Key.alt, kb.Key.alt_r,
+    kb.Key.caps_lock,
+    # Function keys F1–F12 are system-assigned on most Macs
+    kb.Key.f1, kb.Key.f2, kb.Key.f3, kb.Key.f4, kb.Key.f5, kb.Key.f6,
+    kb.Key.f7, kb.Key.f8, kb.Key.f9, kb.Key.f10, kb.Key.f11, kb.Key.f12,
+}
+
+# Modifier keys tracked for 3-modifier combo detection
+_MODIFIER_KEYS = {
+    kb.Key.cmd, kb.Key.cmd_r,
+    kb.Key.shift, kb.Key.shift_r,
+    kb.Key.alt, kb.Key.alt_r,
+    kb.Key.ctrl, kb.Key.ctrl_r,
+}
+
+_COMBO_MODIFIERS = {kb.Key.cmd, kb.Key.cmd_r, kb.Key.shift, kb.Key.shift_r, kb.Key.alt, kb.Key.alt_r}
+
+# Currently held modifier keys
+_held_modifiers: set = set()
+
+# Possible 3-modifier combos the user can choose from
+COMBO_OPTIONS = {
+    "cmd+shift+alt":  ("⌘⇧⌥",  {kb.Key.cmd, kb.Key.shift, kb.Key.alt}),
+    "cmd+shift+alt_r":("⌘⇧⌥›", {kb.Key.cmd, kb.Key.shift, kb.Key.alt_r}),
+    "cmd+ctrl+alt":   ("⌘⌃⌥",  {kb.Key.cmd, kb.Key.ctrl,  kb.Key.alt}),
+    "cmd+shift+ctrl": ("⌘⇧⌃",  {kb.Key.cmd, kb.Key.shift, kb.Key.ctrl}),
+}
+
+def _combo_is_active(combo_key: str) -> bool:
+    """Return True when exactly the 3 mods for this combo are all held."""
+    _, required = COMBO_OPTIONS.get(combo_key, (None, set()))
+    if not required:
+        return False
+    # Normalise: treat cmd/cmd_r etc. as interchangeable within the required set
+    # by checking that for each required key, either it or its pair is held
+    _pair = {kb.Key.cmd: kb.Key.cmd_r, kb.Key.cmd_r: kb.Key.cmd,
+             kb.Key.shift: kb.Key.shift_r, kb.Key.shift_r: kb.Key.shift,
+             kb.Key.alt: kb.Key.alt_r, kb.Key.alt_r: kb.Key.alt,
+             kb.Key.ctrl: kb.Key.ctrl_r, kb.Key.ctrl_r: kb.Key.ctrl}
+    for mod in required:
+        if mod not in _held_modifiers and _pair.get(mod) not in _held_modifiers:
+            return False
+    return True
 
 def get_ui_hotkey():
     ui = config.get("ui_shortcut")
@@ -671,37 +723,57 @@ def get_ui_hotkey():
     try:
         return getattr(kb.Key, ui)
     except AttributeError:
-        # Character key (e.g. backtick)
         if len(ui) == 1:
             return kb.KeyCode.from_char(ui)
         return None
 
 def _key_label(key):
     labels = {
-        kb.Key.alt_r: "Right Option (⌥)", kb.Key.alt: "Left Option (⌥)",
         kb.Key.f13: "F13", kb.Key.f14: "F14", kb.Key.f15: "F15",
-        kb.Key.caps_lock: "Caps Lock", kb.Key.space: "Space",
+        kb.Key.f16: "F16", kb.Key.f17: "F17", kb.Key.f18: "F18",
+        kb.Key.f19: "F19", kb.Key.f20: "F20",
+        kb.Key.caps_lock: "Caps Lock",
     }
     return labels.get(key, key.name.replace("_", " ").title())
 
+def _is_blocked_ui_key(key) -> bool:
+    """Return True if this key must not be used as a UI shortcut."""
+    if key in _BLOCKED_UI_KEYS:
+        return True
+    # Also block digit keycodes that may come as KeyCode rather than Key
+    if isinstance(key, kb.KeyCode) and key.char and key.char in "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        return True
+    return False
+
+_combo_triggered = False   # prevent repeated triggers while held
+
 def on_kb_press(key):
-    # Capture mode for dictation hotkey
+    global _combo_triggered
+
+    # Track held modifiers
+    if key in _COMBO_MODIFIERS:
+        _held_modifiers.add(key)
+
+    # Capture mode for dictation combo
     if state["capturing"]:
-        if isinstance(key, kb.Key) and key in (
-            kb.Key.shift, kb.Key.shift_r, kb.Key.ctrl, kb.Key.ctrl_r,
-            kb.Key.alt, kb.Key.cmd, kb.Key.cmd_r): return
-        key_name  = key.name if isinstance(key, kb.Key) else (key.char or str(key))
-        key_label = _key_label(key) if isinstance(key, kb.Key) else (key.char.upper() if key.char else str(key))
-        config["hotkey"] = key_name; config["hotkey_label"] = key_label
-        config["hotkey_type"] = "keyboard"
-        save_config(config); state["capturing"] = False
-        print(f"✅ Hotkey set: {key_label}"); return
+        # Wait for one of the defined combos to be fully held
+        for combo_key, (label, _) in COMBO_OPTIONS.items():
+            if _combo_is_active(combo_key):
+                config["hotkey"] = combo_key
+                config["hotkey_label"] = label
+                config["hotkey_type"] = "combo"
+                save_config(config); state["capturing"] = False
+                print(f"✅ Combo set: {label}")
+        return
 
     # Capture mode for UI shortcut
     if state["capturing_ui"]:
-        if isinstance(key, kb.Key) and key in (
-            kb.Key.shift, kb.Key.shift_r, kb.Key.ctrl, kb.Key.ctrl_r,
-            kb.Key.alt, kb.Key.cmd, kb.Key.cmd_r): return
+        if key in _MODIFIER_KEYS:
+            return
+        if _is_blocked_ui_key(key):
+            state["capturing_ui_error"] = "That key is reserved. Try F13–F20 or a symbol key (` - = [ ] \\ ; ' , . /)."
+            return
+        state.pop("capturing_ui_error", None)
         key_name  = key.name if isinstance(key, kb.Key) else (key.char or str(key))
         key_label = _key_label(key) if isinstance(key, kb.Key) else (key.char.upper() if key.char else str(key))
         config["ui_shortcut"] = key_name; config["ui_shortcut_label"] = key_label
@@ -714,12 +786,21 @@ def on_kb_press(key):
         handle_ui_shortcut()
         return
 
-    if config.get("hotkey_type") == "keyboard" and key == get_kb_hotkey():
-        handle_trigger_press()
+    # 3-modifier combo trigger
+    if config.get("hotkey_type") == "combo":
+        if not _combo_triggered and _combo_is_active(config.get("hotkey", "cmd+shift+alt")):
+            _combo_triggered = True
+            handle_trigger_press()
 
 def on_kb_release(key):
-    if config.get("hotkey_type") == "keyboard" and key == get_kb_hotkey():
-        handle_trigger_release()
+    global _combo_triggered
+    if key in _COMBO_MODIFIERS:
+        _held_modifiers.discard(key)
+    if config.get("hotkey_type") == "combo":
+        # Fire release as soon as any of the combo's modifiers is lifted
+        if _combo_triggered and key in _COMBO_MODIFIERS:
+            _combo_triggered = False
+            handle_trigger_release()
 
 # ── MOUSE LISTENER ────────────────────────────────────────────────────────────
 
@@ -793,6 +874,7 @@ def api_status():
         "enabled": state["enabled"], "recording": state["recording"],
         "transcribing": state["transcribing"], "capturing": state["capturing"],
         "capturing_ui": state["capturing_ui"],
+        "capturing_ui_error": state.pop("capturing_ui_error", None),
         "mic_testing": state["mic_testing"], "mic_level": state["mic_level"],
         "overlay_text": state["overlay_text"],
         "config": config, "history": state["history"], "stats": load_stats(),
@@ -821,6 +903,10 @@ def api_capture_ui_start():  state["capturing_ui"] = True;  return jsonify({"cap
 
 @app.route("/api/capture_ui/cancel", methods=["POST"])
 def api_capture_ui_cancel(): state["capturing_ui"] = False; return jsonify({"capturing_ui": False})
+
+@app.route("/api/combo_options", methods=["GET"])
+def api_combo_options():
+    return jsonify([{"key": k, "label": v[0]} for k, v in COMBO_OPTIONS.items()])
 
 @app.route("/api/mic/start", methods=["POST"])
 def api_mic_start():
@@ -1306,13 +1392,13 @@ HTML = r"""<!DOCTYPE html>
           <rect x="58" y="43" width="12" height="9" rx="2.5" fill="#f59e0b" opacity="0.35"/>
         </svg>
       </div>
-      <div class="modal-title">Set Your Hotkey</div>
-      <div class="modal-subtitle">Press the key you want to use to start/stop recording. You can change this anytime in Settings.</div>
+      <div class="modal-title">Set Your Shortcut</div>
+      <div class="modal-subtitle">Choose a 3-modifier combo to trigger dictation. These combos are safe — they won't conflict with normal typing or system shortcuts.</div>
       <div class="hotkey-field" id="onboardHotkeyField" style="margin-bottom:16px">
-        <div class="field-label">Hotkey</div>
+        <div class="field-label">Dictation Combo</div>
         <div class="hotkey-row">
-          <span class="hotkey-value" id="onboardHotkeyValue">Right Option (⌥)</span>
-          <button class="capture-btn" id="onboardCaptureBtn" onclick="startOnboardCapture()">Assign</button>
+          <span class="hotkey-value" id="onboardHotkeyValue">⌘⇧⌥</span>
+          <select id="onboardComboSelect" onchange="saveOnboardCombo()" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px;cursor:pointer"></select>
         </div>
       </div>
       <button class="modal-btn" onclick="nextStep()">Next →</button>
@@ -1433,20 +1519,21 @@ HTML = r"""<!DOCTYPE html>
         </select>
       </div>
       <div class="hotkey-field" id="hotkeyField">
-        <div class="field-label">Dictation Hotkey</div>
+        <div class="field-label">Dictation Shortcut <span style="font-size:10px;color:var(--dim);font-weight:400">(3-modifier combo)</span></div>
         <div class="hotkey-row">
-          <span class="hotkey-value" id="hotkeyValue">Right Option (⌥)</span>
-          <button class="capture-btn" id="captureBtn" onclick="toggleCapture()">Assign</button>
+          <span class="hotkey-value" id="hotkeyValue">⌘⇧⌥</span>
+          <select id="comboSelect" onchange="saveCombo()" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px;cursor:pointer"></select>
         </div>
       </div>
     </div>
     <div class="settings-grid">
       <div class="hotkey-field" id="uiShortcutField">
-        <div class="field-label">Open UI Shortcut</div>
+        <div class="field-label">Open UI Shortcut <span style="font-size:10px;color:var(--dim);font-weight:400">(F13–F20 or symbol key)</span></div>
         <div class="hotkey-row">
           <span class="hotkey-value" id="uiShortcutValue">Not set</span>
           <button class="capture-btn" id="captureUiBtn" onclick="toggleCaptureUi()">Assign</button>
         </div>
+        <div id="uiShortcutError" style="font-size:11px;color:#ef4444;margin-top:6px;display:none"></div>
       </div>
       <div class="field">
         <div class="field-label">Whisper Model</div>
@@ -1693,10 +1780,13 @@ function nextStep() {
   }
 }
 
-async function startOnboardCapture() {
-  await fetch('/api/capture/start', {method:'POST'});
-  document.getElementById('onboardCaptureBtn').textContent = 'Press a key…';
-  document.getElementById('onboardCaptureBtn').classList.add('active');
+async function saveOnboardCombo() {
+  const key = document.getElementById('onboardComboSelect').value;
+  const opt = Array.from(document.getElementById('onboardComboSelect').options).find(o => o.value === key);
+  if (!opt) return;
+  await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({hotkey: key, hotkey_label: opt.textContent.trim(), hotkey_type: 'combo'})});
+  fetchStatus();
 }
 
 async function toggleOnboardMic() {
@@ -1725,7 +1815,6 @@ let clipboardOnly  = false;
 let soundEnabled   = true;
 let pauseEnabled   = true;
 let overlayEnabled = true;
-let isCapturing    = false;
 let isCapturingUi  = false;
 let isMicTesting   = false;
 let lastHistoryKey = '';
@@ -1756,7 +1845,7 @@ async function fetchStatus() {
 }
 
 function applyStatus(data) {
-  const { enabled, recording, transcribing, capturing, capturing_ui,
+  const { enabled, recording, transcribing, capturing_ui,
           mic_testing, mic_level, overlay_text, config, history, stats } = data;
 
   // Power
@@ -1780,24 +1869,15 @@ function applyStatus(data) {
     document.getElementById('statSessionsTotal').textContent = stats.sessions_total || 0;
   }
 
-  // Hotkey capture
-  isCapturing = capturing;
-  const field = document.getElementById('hotkeyField');
-  const val   = document.getElementById('hotkeyValue');
-  const cbtn  = document.getElementById('captureBtn');
-  if (capturing) {
-    field.classList.add('capturing'); val.classList.add('capturing');
-    val.textContent = 'Press any key or mouse button…';
-    cbtn.textContent = 'Cancel'; cbtn.classList.add('active');
-  } else {
-    field.classList.remove('capturing'); val.classList.remove('capturing');
-    val.textContent = config.hotkey_label || 'Right Option (⌥)';
-    cbtn.textContent = 'Assign'; cbtn.classList.remove('active');
-    // Update onboarding hotkey display
-    document.getElementById('onboardHotkeyValue').textContent = config.hotkey_label || 'Right Option (⌥)';
-    document.getElementById('onboardCaptureBtn').textContent = 'Assign';
-    document.getElementById('onboardCaptureBtn').classList.remove('active');
+  // Combo select — sync to current config
+  const cs = document.getElementById('comboSelect');
+  if (cs && cs.options.length > 0) {
+    cs.value = config.hotkey || 'cmd+shift+alt';
   }
+  document.getElementById('hotkeyValue').textContent = config.hotkey_label || '⌘⇧⌥';
+  document.getElementById('onboardHotkeyValue').textContent = config.hotkey_label || '⌘⇧⌥';
+  const ocs = document.getElementById('onboardComboSelect');
+  if (ocs && ocs.options.length > 0) ocs.value = config.hotkey || 'cmd+shift+alt';
 
   // UI shortcut capture
   isCapturingUi = capturing_ui;
@@ -1806,12 +1886,19 @@ function applyStatus(data) {
   const uiCbtn  = document.getElementById('captureUiBtn');
   if (capturing_ui) {
     uiField.classList.add('capturing'); uiVal.classList.add('capturing');
-    uiVal.textContent = 'Press any key…';
+    uiVal.textContent = 'Press a symbol or F-key…';
     uiCbtn.textContent = 'Cancel'; uiCbtn.classList.add('active');
   } else {
     uiField.classList.remove('capturing'); uiVal.classList.remove('capturing');
     uiVal.textContent = config.ui_shortcut_label || 'Not set';
     uiCbtn.textContent = 'Assign'; uiCbtn.classList.remove('active');
+  }
+  // UI shortcut error feedback
+  const uiErr = document.getElementById('uiShortcutError');
+  if (data.capturing_ui_error) {
+    uiErr.textContent = data.capturing_ui_error; uiErr.style.display = 'block';
+  } else if (!capturing_ui) {
+    uiErr.style.display = 'none';
   }
 
   // Mic meter
@@ -1956,10 +2043,29 @@ function showTab(name) {
 }
 
 async function togglePower() { await fetch('/api/toggle', {method:'POST'}); fetchStatus(); }
-async function toggleCapture() {
-  await fetch(isCapturing ? '/api/capture/cancel' : '/api/capture/start', {method:'POST'});
+
+async function loadComboOptions() {
+  try {
+    const opts = await (await fetch('/api/combo_options')).json();
+    [document.getElementById('comboSelect'), document.getElementById('onboardComboSelect')]
+      .forEach(sel => {
+        if (!sel) return;
+        const cur = sel.value;
+        sel.innerHTML = opts.map(o => `<option value="${o.key}">${o.label}</option>`).join('');
+        if (cur) sel.value = cur;
+      });
+  } catch(e) {}
+}
+
+async function saveCombo() {
+  const key = document.getElementById('comboSelect').value;
+  const opt = Array.from(document.getElementById('comboSelect').options).find(o => o.value === key);
+  if (!opt) return;
+  await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({hotkey: key, hotkey_label: opt.textContent.trim(), hotkey_type: 'combo'})});
   fetchStatus();
 }
+
 async function toggleCaptureUi() {
   await fetch(isCapturingUi ? '/api/capture_ui/cancel' : '/api/capture_ui/start', {method:'POST'});
   fetchStatus();
@@ -2111,6 +2217,7 @@ fetch('/api/version').then(r=>r.json()).then(d => {
   document.getElementById('versionBadge').textContent = 'v' + d.current;
   document.getElementById('versionFooter').textContent = 'v' + d.current;
 });
+loadComboOptions();
 fetchStatus();
 setInterval(fetchStatus, 1000);
 </script>
