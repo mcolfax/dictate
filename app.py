@@ -21,7 +21,7 @@ SETTINGS_PATH   = _runtime_path("settings_window.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
-CURRENT_VERSION = "1.6.0"
+CURRENT_VERSION = "1.7.0"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"

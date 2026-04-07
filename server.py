@@ -30,7 +30,7 @@ def _log_error(msg):
         pass
 SAMPLE_RATE     = 16000
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-APP_VERSION     = "1.6.0"
+APP_VERSION     = "1.7.0"
 GITHUB_RAW      = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -158,6 +158,10 @@ state = {
     "recording":         False,
     "transcribing":      False,
     "capturing":         False,
+    "capturing_type":    "combo",  # "combo" | "keyboard" | "mouse"
+    "capture_warning":   None,     # warning message during keyboard capture
+    "capture_error":     None,     # error message during keyboard capture
+    "kb_preview":        "",       # live preview string during keyboard capture
     "capturing_ui":      False,   # Capturing UI shortcut
     "mic_testing":       False,
     "mic_level":         0,
@@ -748,6 +752,11 @@ _COMBO_MODIFIERS = {kb.Key.cmd, kb.Key.cmd_r, kb.Key.shift, kb.Key.shift_r, kb.K
 # Currently held modifier keys
 _held_modifiers: set = set()
 
+# Live keyboard capture state (only used while capturing_type == "keyboard")
+_kb_cap_mods: set = set()      # modifier keys held during capture
+_kb_cap_trigger = None         # last non-modifier key pressed during capture
+_kb_cap_trigger_name: str = "" # its name string
+
 # Possible 3-modifier combos the user can choose from
 COMBO_OPTIONS = {
     "cmd+shift+alt":  ("⌘⇧⌥",  {kb.Key.cmd, kb.Key.shift, kb.Key.alt}),
@@ -755,6 +764,168 @@ COMBO_OPTIONS = {
     "cmd+ctrl+alt":   ("⌘⌃⌥",  {kb.Key.cmd, kb.Key.ctrl,  kb.Key.alt}),
     "cmd+shift+ctrl": ("⌘⇧⌃",  {kb.Key.cmd, kb.Key.shift, kb.Key.ctrl}),
 }
+
+# ── KEYBOARD HOTKEY LABELS ────────────────────────────────────────────────────
+_MOD_LABELS = {
+    "cmd": "⌘", "cmd_r": "⌘›",
+    "ctrl": "⌃", "ctrl_r": "⌃›",
+    "alt": "⌥", "alt_r": "⌥›",
+    "shift": "⇧", "shift_r": "⇧›",
+}
+_KEY_LABELS = {
+    **{f"f{i}": f"F{i}" for i in range(1, 21)},
+    "space": "Space", "enter": "↩", "backspace": "⌫", "delete": "⌦",
+    "tab": "⇥", "esc": "Esc", "home": "↖", "end": "↘",
+    "page_up": "⇞", "page_down": "⇟",
+    "up": "↑", "down": "↓", "left": "←", "right": "→",
+}
+
+def _kb_key_name(key) -> str:
+    """Return the storage name for a pynput key (used in hotkey strings)."""
+    if isinstance(key, kb.Key):
+        return key.name
+    if isinstance(key, kb.KeyCode) and key.char:
+        return key.char.lower()
+    return ""
+
+def _kb_key_label(key_name: str) -> str:
+    """Human-readable label for a key name."""
+    if key_name in _MOD_LABELS:
+        return _MOD_LABELS[key_name]
+    if key_name in _KEY_LABELS:
+        return _KEY_LABELS[key_name]
+    if len(key_name) == 1:
+        return key_name.upper()
+    return key_name.replace("_", " ").title()
+
+def _kb_hotkey_label(hotkey_str: str) -> str:
+    """Build a display label from a hotkey string like 'ctrl+alt+d' → '⌃⌥D'."""
+    parts = hotkey_str.split("+")
+    return "".join(_kb_key_label(p) for p in parts)
+
+# ── KEYBOARD HOTKEY VALIDATION ────────────────────────────────────────────────
+
+# Bare keys that are always blocked as dictation hotkeys
+_KB_BLOCKED_BARE = {
+    # Letters
+    *[c for c in "abcdefghijklmnopqrstuvwxyz"],
+    # Digits
+    *[c for c in "0123456789"],
+    # Essential editing/nav keys
+    "space", "enter", "backspace", "delete", "tab", "esc",
+    "up", "down", "left", "right",
+    "home", "end", "page_up", "page_down",
+    # Left-side modifiers (too intrusive as solo hotkeys)
+    "cmd", "shift", "alt", "ctrl",
+    # Right shift (commonly used as modifier)
+    "shift_r",
+    # Caps lock
+    "caps_lock",
+}
+
+# Combos that are always blocked — (frozenset_of_mod_names, trigger_name)
+_KB_BLOCKED_COMBOS: set = {
+    # Essential macOS / universal app shortcuts
+    (frozenset(["cmd"]), c) for c in list("cCvVxXzZaAqQwWsSnNtT")
+} | {
+    (frozenset(["cmd"]), "space"),
+    (frozenset(["cmd"]), "tab"),
+    (frozenset(["cmd"]), "delete"),
+    (frozenset(["cmd"]), "backspace"),
+    (frozenset(["ctrl"]), "space"),    # input source switch
+    (frozenset(["ctrl", "cmd"]), "space"),  # character viewer
+    (frozenset(["cmd", "shift"]), "3"),
+    (frozenset(["cmd", "shift"]), "4"),
+    (frozenset(["cmd", "shift"]), "5"),
+    (frozenset(["cmd", "shift"]), "z"),
+}
+
+# Combos or keys that warn but are allowed
+_KB_WARNED: list = [
+    # (set_of_mod_names_or_None, trigger_name_or_None, message)
+    # F1-F12 alone
+    *[(set(), f"f{i}", f"F{i} is used by macOS for system functions (brightness, volume, Mission Control, etc.).")
+      for i in range(1, 13)],
+    # Right Option alone — used for special chars in many apps
+    (set(), "alt_r", "⌥› (Right Option) is used for typing accented and special characters in many apps. It may interfere with text entry."),
+    # Common ⌘ combos not in blocked list
+    *[({"cmd"}, c, f"⌘{c.upper()} is a common application shortcut and may conflict.")
+      for c in list("defghijklmopruybBDEFGHIJKLMOPRUY")],
+    # ⌥+letter — special characters
+    *[( {"alt"}, c, f"⌥{c.upper()} types a special character in most apps and may conflict.")
+      for c in list("abcdefghijklmnopqrstuvwxyz")],
+]
+
+def _validate_kb_hotkey(mod_names: set, trigger_name: str):
+    """
+    Returns ("block", msg) | ("warn", msg) | ("ok", "").
+    mod_names: set of modifier name strings (e.g. {"ctrl", "alt"})
+    trigger_name: name of the trigger key (e.g. "d", "f5", "alt_r")
+    """
+    # Hard block: bare blocked keys
+    if not mod_names and trigger_name in _KB_BLOCKED_BARE:
+        return ("block", f"'{_kb_key_label(trigger_name)}' cannot be used alone as a dictation hotkey — it would break normal typing.")
+
+    # Hard block: specific combos
+    combo_key = (frozenset(mod_names), trigger_name.lower())
+    # Normalize case for single-char trigger
+    if len(trigger_name) == 1:
+        combo_key = (frozenset(mod_names), trigger_name.lower())
+    for blocked in _KB_BLOCKED_COMBOS:
+        if blocked == combo_key:
+            label = "".join(_MOD_LABELS.get(m, m) for m in sorted(mod_names)) + _kb_key_label(trigger_name)
+            return ("block", f"{label} is a reserved system shortcut and cannot be used.")
+
+    # Warnings
+    for warn_mods, warn_trigger, warn_msg in _KB_WARNED:
+        if mod_names == set(warn_mods) and trigger_name == warn_trigger:
+            return ("warn", warn_msg)
+
+    return ("ok", "")
+
+# ── KEYBOARD HOTKEY PARSING ───────────────────────────────────────────────────
+_MOD_NAME_TO_KEYS = {
+    "cmd":    (kb.Key.cmd, kb.Key.cmd_r),
+    "ctrl":   (kb.Key.ctrl, kb.Key.ctrl_r),
+    "alt":    (kb.Key.alt, kb.Key.alt_r),
+    "shift":  (kb.Key.shift, kb.Key.shift_r),
+    "cmd_r":  (kb.Key.cmd_r,),
+    "alt_r":  (kb.Key.alt_r,),
+    "ctrl_r": (kb.Key.ctrl_r,),
+    "shift_r":(kb.Key.shift_r,),
+}
+
+def _parse_kb_hotkey(hotkey_str: str):
+    """Parse 'ctrl+alt+d' → (mod_names_set, trigger_name, trigger_pynput_key)."""
+    parts = hotkey_str.split("+")
+    mod_names = set(parts[:-1])
+    trigger_name = parts[-1]
+    try:
+        trigger_key = getattr(kb.Key, trigger_name)
+    except AttributeError:
+        trigger_key = kb.KeyCode.from_char(trigger_name) if len(trigger_name) == 1 else None
+    return mod_names, trigger_name, trigger_key
+
+def _mods_satisfied(req_names: set) -> bool:
+    """True if all required modifier names are satisfied by currently held keys."""
+    for name in req_names:
+        keys = _MOD_NAME_TO_KEYS.get(name, ())
+        if not any(k in _held_modifiers for k in keys):
+            return False
+    return True
+
+def _kb_preview_label() -> str:
+    """Build a live preview label from _kb_cap_mods + _kb_cap_trigger."""
+    parts = []
+    # Order: ctrl, cmd, alt, shift, then trigger
+    for name in ("ctrl", "ctrl_r", "cmd", "cmd_r", "alt", "alt_r", "shift", "shift_r"):
+        if any(k in _kb_cap_mods for k in _MOD_NAME_TO_KEYS.get(name, ())):
+            if name not in parts:
+                parts.append(name)
+    label = "".join(_MOD_LABELS.get(p, p) for p in parts)
+    if _kb_cap_trigger_name:
+        label += _kb_key_label(_kb_cap_trigger_name)
+    return label or "…"
 
 def _combo_is_active(combo_key: str) -> bool:
     """Return True when exactly the 3 mods for this combo are all held."""
@@ -803,15 +974,45 @@ def _is_blocked_ui_key(key) -> bool:
 _combo_triggered = False   # prevent repeated triggers while held
 
 def on_kb_press(key):
-    global _combo_triggered
+    global _combo_triggered, _kb_cap_mods, _kb_cap_trigger, _kb_cap_trigger_name
 
-    # Track held modifiers
+    # Always track held modifiers
     if key in _COMBO_MODIFIERS:
         _held_modifiers.add(key)
 
-    # Capture mode for dictation combo
-    if state["capturing"]:
-        # Wait for one of the defined combos to be fully held
+    # ── Keyboard capture mode ──────────────────────────────────────────────
+    if state["capturing"] and state["capturing_type"] == "keyboard":
+        key_name = _kb_key_name(key)
+        is_mod = key in _MODIFIER_KEYS
+        if is_mod:
+            _kb_cap_mods.add(key)
+            state["kb_preview"] = _kb_preview_label()
+            state["capture_error"] = None
+        else:
+            if not key_name:
+                return
+            _kb_cap_trigger = key
+            _kb_cap_trigger_name = key_name
+            state["kb_preview"] = _kb_preview_label()
+            # Validate immediately — reject blocked keys inline
+            mod_names = {_kb_key_name(m) for m in _kb_cap_mods}
+            status, msg = _validate_kb_hotkey(mod_names, key_name)
+            if status == "block":
+                state["capture_error"]   = msg
+                state["capture_warning"] = None
+                _kb_cap_trigger = None
+                _kb_cap_trigger_name = ""
+                state["kb_preview"] = _kb_preview_label()
+            elif status == "warn":
+                state["capture_warning"] = msg
+                state["capture_error"]   = None
+            else:
+                state["capture_warning"] = None
+                state["capture_error"]   = None
+        return
+
+    # ── Combo capture mode ────────────────────────────────────────────────
+    if state["capturing"] and state["capturing_type"] == "combo":
         for combo_key, (label, _) in COMBO_OPTIONS.items():
             if _combo_is_active(combo_key):
                 config["hotkey"] = combo_key
@@ -821,7 +1022,7 @@ def on_kb_press(key):
                 print(f"✅ Combo set: {label}")
         return
 
-    # Capture mode for UI shortcut
+    # ── UI shortcut capture ───────────────────────────────────────────────
     if state["capturing_ui"]:
         if key in _MODIFIER_KEYS:
             return
@@ -835,24 +1036,100 @@ def on_kb_press(key):
         save_config(config); state["capturing_ui"] = False
         print(f"✅ UI shortcut set: {key_label}"); return
 
-    # UI shortcut
+    # ── UI shortcut trigger ───────────────────────────────────────────────
     ui_key = get_ui_hotkey()
     if ui_key and key == ui_key:
         handle_ui_shortcut()
         return
 
-    # 3-modifier combo trigger
+    # ── Keyboard hotkey trigger ───────────────────────────────────────────
+    if config.get("hotkey_type") == "keyboard":
+        hk = config.get("hotkey", "")
+        if hk:
+            req_mods, trig_name, trig_key = _parse_kb_hotkey(hk)
+            if trig_key is not None and key == trig_key and _mods_satisfied(req_mods):
+                handle_trigger_press()
+        return
+
+    # ── 3-modifier combo trigger ──────────────────────────────────────────
     if config.get("hotkey_type") == "combo":
         if not _combo_triggered and _combo_is_active(config.get("hotkey", "cmd+shift+alt")):
             _combo_triggered = True
             handle_trigger_press()
 
 def on_kb_release(key):
-    global _combo_triggered
+    global _combo_triggered, _kb_cap_mods, _kb_cap_trigger, _kb_cap_trigger_name
+
+    # ── Keyboard capture: finalize on release ─────────────────────────────
+    if state["capturing"] and state["capturing_type"] == "keyboard":
+        key_name = _kb_key_name(key)
+        is_mod = key in _MODIFIER_KEYS
+
+        if not is_mod and _kb_cap_trigger is not None and key == _kb_cap_trigger:
+            # User released the trigger key → finalize capture
+            mod_names = {_kb_key_name(m) for m in _kb_cap_mods}
+            status, msg = _validate_kb_hotkey(mod_names, key_name)
+            if status == "block":
+                state["capture_error"] = msg
+                state["capture_warning"] = None
+                _kb_cap_trigger = None; _kb_cap_trigger_name = ""
+            else:
+                # Build hotkey string
+                parts = sorted(mod_names, key=lambda n: ("cmd" in n, "ctrl" in n, "alt" in n, "shift" in n)) + [key_name]
+                hk_str = "+".join(parts)
+                hk_label = _kb_hotkey_label(hk_str)
+                config["hotkey"] = hk_str
+                config["hotkey_label"] = hk_label
+                config["hotkey_type"] = "keyboard"
+                save_config(config)
+                state["capturing"] = False
+                state["kb_preview"] = ""
+                state["capture_warning"] = msg if status == "warn" else None
+                state["capture_error"] = None
+                _kb_cap_mods = set(); _kb_cap_trigger = None; _kb_cap_trigger_name = ""
+                print(f"✅ Keyboard hotkey set: {hk_label}")
+            return
+
+        if is_mod:
+            _kb_cap_mods.discard(key)
+            # If only modifier keys held (no trigger) and all released → capture single modifier
+            if not _kb_cap_trigger and not _kb_cap_mods:
+                if key_name in ("alt_r", "cmd_r", "ctrl_r") or key_name.startswith("f"):
+                    status, msg = _validate_kb_hotkey(set(), key_name)
+                    if status == "block":
+                        state["capture_error"] = msg
+                        state["capture_warning"] = None
+                    else:
+                        hk_str = key_name
+                        hk_label = _kb_hotkey_label(hk_str)
+                        config["hotkey"] = hk_str
+                        config["hotkey_label"] = hk_label
+                        config["hotkey_type"] = "keyboard"
+                        save_config(config)
+                        state["capturing"] = False
+                        state["kb_preview"] = ""
+                        state["capture_warning"] = msg if status == "warn" else None
+                        state["capture_error"] = None
+                        _kb_cap_trigger_name = ""
+                        print(f"✅ Keyboard hotkey set: {hk_label}")
+            state["kb_preview"] = _kb_preview_label()
+        return
+
+    # Update held modifiers
     if key in _COMBO_MODIFIERS:
         _held_modifiers.discard(key)
+
+    # ── Keyboard hotkey release ───────────────────────────────────────────
+    if config.get("hotkey_type") == "keyboard":
+        hk = config.get("hotkey", "")
+        if hk:
+            _, trig_name, trig_key = _parse_kb_hotkey(hk)
+            if trig_key is not None and key == trig_key:
+                handle_trigger_release()
+        return
+
+    # ── Combo trigger release ─────────────────────────────────────────────
     if config.get("hotkey_type") == "combo":
-        # Fire release as soon as any of the combo's modifiers is lifted
         if _combo_triggered and key in _COMBO_MODIFIERS:
             _combo_triggered = False
             handle_trigger_release()
@@ -866,7 +1143,7 @@ MOUSE_BUTTON_LABELS = {
 
 def on_ms_click(x, y, button, pressed):
     btn_str = str(button)
-    if state["capturing"] and pressed:
+    if state["capturing"] and state.get("capturing_type") == "mouse" and pressed:
         config["hotkey"] = btn_str
         config["hotkey_label"] = MOUSE_BUTTON_LABELS.get(btn_str, btn_str)
         config["hotkey_type"] = "mouse"
@@ -930,6 +1207,10 @@ def api_status():
         "transcribing": state["transcribing"], "capturing": state["capturing"],
         "capturing_ui": state["capturing_ui"],
         "capturing_ui_error": state.pop("capturing_ui_error", None),
+        "capturing_type":  state.get("capturing_type", "combo"),
+        "kb_preview":      state.get("kb_preview", ""),
+        "capture_warning": state.pop("capture_warning", None),
+        "capture_error":   state.pop("capture_error", None),
         "mic_testing": state["mic_testing"], "mic_level": state["mic_level"],
         "overlay_text": state["overlay_text"],
         "config": config, "history": state["history"], "stats": load_stats(),
@@ -947,11 +1228,31 @@ def api_config():
     config.update(request.json); save_config(config)
     return jsonify(config)
 
-@app.route("/api/capture/start",    methods=["POST"])
-def api_capture_start():  state["capturing"] = True;     return jsonify({"capturing": True})
+@app.route("/api/capture/start", methods=["POST"])
+def api_capture_start():
+    global _kb_cap_mods, _kb_cap_trigger, _kb_cap_trigger_name
+    body = request.get_json(silent=True) or {}
+    ctype = body.get("type", "combo")
+    state["capturing"] = True
+    state["capturing_type"] = ctype
+    state["kb_preview"] = ""
+    state["capture_warning"] = None
+    state["capture_error"] = None
+    if ctype == "keyboard":
+        _kb_cap_mods = set()
+        _kb_cap_trigger = None
+        _kb_cap_trigger_name = ""
+    return jsonify({"capturing": True, "capturing_type": ctype})
 
-@app.route("/api/capture/cancel",   methods=["POST"])
-def api_capture_cancel(): state["capturing"] = False;    return jsonify({"capturing": False})
+@app.route("/api/capture/cancel", methods=["POST"])
+def api_capture_cancel():
+    global _kb_cap_mods, _kb_cap_trigger, _kb_cap_trigger_name
+    state["capturing"] = False
+    state["kb_preview"] = ""
+    state["capture_warning"] = None
+    state["capture_error"] = None
+    _kb_cap_mods = set(); _kb_cap_trigger = None; _kb_cap_trigger_name = ""
+    return jsonify({"capturing": False})
 
 @app.route("/api/capture_ui/start",  methods=["POST"])
 def api_capture_ui_start():  state["capturing_ui"] = True;  return jsonify({"capturing_ui": True})
@@ -1391,6 +1692,9 @@ HTML = r"""<!DOCTYPE html>
   /* ── Hotkey ── */
   .hotkey-field{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;transition:border-color .15s}
   .hotkey-field.capturing{border-color:var(--amber);animation:capture-pulse 1s ease infinite}
+  .htab{background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--dim);padding:4px 10px;font-size:11px;font-weight:500;cursor:pointer;transition:all .15s}
+  .htab.active{background:var(--amber);border-color:var(--amber);color:#1a1006;font-weight:600}
+  .htab:hover:not(.active){border-color:var(--amber);color:var(--amber)}
   .hotkey-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
   .hotkey-value{color:var(--text);font-size:13px;flex:1}
   .hotkey-value.capturing{color:var(--amber)}
@@ -1675,14 +1979,40 @@ HTML = r"""<!DOCTYPE html>
         </select>
       </div>
       <div class="hotkey-field" id="hotkeyField">
-        <div class="field-label">Dictation Shortcut <span style="font-size:10px;color:var(--dim);font-weight:400">(3-modifier combo)</span></div>
-        <div class="hotkey-row">
-          <span class="hotkey-value" id="hotkeyValue">⌘⇧⌥</span>
-          <select id="comboSelect" onchange="saveCombo()" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px;cursor:pointer"></select>
+        <div class="field-label">Dictation Shortcut</div>
+        <div style="display:flex;gap:4px;margin-bottom:12px">
+          <button class="htab active" id="htab_combo" onclick="switchHotkeyType('combo')">3-Key Combo</button>
+          <button class="htab" id="htab_keyboard" onclick="switchHotkeyType('keyboard')">Keyboard</button>
+          <button class="htab" id="htab_mouse" onclick="switchHotkeyType('mouse')">Mouse Button</button>
         </div>
-        <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
-          <span style="font-size:11px;color:var(--dim)">Hold your combo to test:</span>
-          <span id="comboTester" style="font-size:12px;color:var(--dim);font-family:'JetBrains Mono',monospace;padding:3px 8px;border-radius:5px;background:var(--surface);border:1px solid var(--border);transition:all .15s">—</span>
+        <!-- Combo panel -->
+        <div id="htPanel_combo">
+          <div class="hotkey-row">
+            <span class="hotkey-value" id="hotkeyValue">⌘⇧⌥</span>
+            <select id="comboSelect" onchange="saveCombo()" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px;cursor:pointer"></select>
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+            <span style="font-size:11px;color:var(--dim)">Hold your combo to test:</span>
+            <span id="comboTester" style="font-size:12px;color:var(--dim);font-family:'JetBrains Mono',monospace;padding:3px 8px;border-radius:5px;background:var(--surface);border:1px solid var(--border);transition:all .15s">—</span>
+          </div>
+        </div>
+        <!-- Keyboard panel -->
+        <div id="htPanel_keyboard" style="display:none">
+          <div class="hotkey-row">
+            <span class="hotkey-value" id="hotkeyKbValue">Not set</span>
+            <button class="capture-btn" id="captureKbBtn" onclick="toggleCaptureKb()">Assign</button>
+          </div>
+          <div id="hotkeyKbHint" style="font-size:11px;color:var(--dim);margin-top:6px">Press any key combo — modifiers + key, F1–F20, or a right-side modifier alone (⌥›, ⌘›, ⌃›).</div>
+          <div id="hotkeyKbWarning" style="font-size:11px;color:#f59e0b;margin-top:6px;display:none"></div>
+          <div id="hotkeyKbError" style="font-size:11px;color:#ef4444;margin-top:6px;display:none"></div>
+        </div>
+        <!-- Mouse panel -->
+        <div id="htPanel_mouse" style="display:none">
+          <div class="hotkey-row">
+            <span class="hotkey-value" id="hotkeyMouseValue">Not set</span>
+            <button class="capture-btn" id="captureMsBtn" onclick="toggleCaptureMs()">Assign</button>
+          </div>
+          <div style="font-size:11px;color:var(--dim);margin-top:6px">Click any mouse button (left, right, middle, or extra buttons).</div>
         </div>
       </div>
     </div>
@@ -2006,6 +2336,9 @@ let soundEnabled   = true;
 let pauseEnabled   = true;
 let overlayEnabled = true;
 let isCapturingUi  = false;
+let isCapturingKb  = false;
+let isCapturingMs  = false;
+let currentHotkeyType = 'combo';
 let isMicTesting   = false;
 let lastHistoryKey = '';
 let languages      = {};
@@ -2036,6 +2369,7 @@ async function fetchStatus() {
 
 function applyStatus(data) {
   const { enabled, recording, transcribing, capturing_ui,
+          capturing_type, kb_preview, capture_warning, capture_error,
           mic_testing, mic_level, overlay_text, config, history, stats } = data;
 
   // Power
@@ -2059,15 +2393,63 @@ function applyStatus(data) {
     document.getElementById('statSessionsTotal').textContent = stats.sessions_total || 0;
   }
 
-  // Combo select — sync to current config
+  // Sync hotkey type tabs and panels
+  const htype = config.hotkey_type || 'combo';
+  if (htype !== currentHotkeyType) switchHotkeyType(htype, true);
+
+  // Combo panel
   const cs = document.getElementById('comboSelect');
-  if (cs && cs.options.length > 0) {
+  if (cs && cs.options.length > 0 && htype === 'combo') {
     cs.value = config.hotkey || 'cmd+shift+alt';
   }
   document.getElementById('hotkeyValue').textContent = config.hotkey_label || '⌘⇧⌥';
   document.getElementById('onboardHotkeyValue').textContent = config.hotkey_label || '⌘⇧⌥';
   const ocs = document.getElementById('onboardComboSelect');
   if (ocs && ocs.options.length > 0) ocs.value = config.hotkey || 'cmd+shift+alt';
+
+  // Keyboard panel
+  isCapturingKb = data.capturing && capturing_type === 'keyboard';
+  const kbField  = document.getElementById('htPanel_keyboard');
+  const kbVal    = document.getElementById('hotkeyKbValue');
+  const kbBtn    = document.getElementById('captureKbBtn');
+  const kbWarn   = document.getElementById('hotkeyKbWarning');
+  const kbErr    = document.getElementById('hotkeyKbError');
+  if (isCapturingKb) {
+    document.getElementById('hotkeyField').classList.add('capturing');
+    kbBtn.textContent = 'Cancel'; kbBtn.classList.add('active');
+    kbVal.classList.add('capturing');
+    kbVal.textContent = kb_preview || '…';
+  } else {
+    document.getElementById('hotkeyField').classList.remove('capturing');
+    kbBtn.textContent = 'Assign'; kbBtn.classList.remove('active');
+    kbVal.classList.remove('capturing');
+    kbVal.textContent = (htype === 'keyboard' && config.hotkey_label) ? config.hotkey_label : 'Not set';
+  }
+  if (capture_warning) {
+    kbWarn.textContent = '⚠ ' + capture_warning; kbWarn.style.display = 'block';
+  } else {
+    kbWarn.style.display = 'none';
+  }
+  if (capture_error) {
+    kbErr.textContent = '✕ ' + capture_error; kbErr.style.display = 'block';
+  } else {
+    kbErr.style.display = 'none';
+  }
+
+  // Mouse panel
+  isCapturingMs = data.capturing && capturing_type === 'mouse';
+  const msVal = document.getElementById('hotkeyMouseValue');
+  const msBtn = document.getElementById('captureMsBtn');
+  if (msVal) {
+    if (isCapturingMs) {
+      msBtn.textContent = 'Cancel'; msBtn.classList.add('active');
+      msVal.classList.add('capturing'); msVal.textContent = 'Click a mouse button…';
+    } else {
+      msBtn.textContent = 'Assign'; msBtn.classList.remove('active');
+      msVal.classList.remove('capturing');
+      msVal.textContent = (htype === 'mouse' && config.hotkey_label) ? config.hotkey_label : 'Not set';
+    }
+  }
 
   // UI shortcut capture
   isCapturingUi = capturing_ui;
@@ -2260,6 +2642,38 @@ function showTab(name) {
 }
 
 async function togglePower() { await fetch('/api/toggle', {method:'POST'}); fetchStatus(); }
+
+function switchHotkeyType(type, silent) {
+  currentHotkeyType = type;
+  ['combo','keyboard','mouse'].forEach(t => {
+    const panel = document.getElementById('htPanel_' + t);
+    const tab   = document.getElementById('htab_' + t);
+    if (panel) panel.style.display = (t === type) ? '' : 'none';
+    if (tab)   tab.classList.toggle('active', t === type);
+  });
+}
+
+async function toggleCaptureKb() {
+  if (isCapturingKb) {
+    await fetch('/api/capture/cancel', {method:'POST'});
+  } else {
+    await fetch('/api/capture/start', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({type: 'keyboard'})});
+  }
+  fetchStatus();
+}
+
+async function toggleCaptureMs() {
+  if (isCapturingMs) {
+    await fetch('/api/capture/cancel', {method:'POST'});
+  } else {
+    await fetch('/api/capture/start', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({type: 'mouse'})});
+  }
+  fetchStatus();
+}
 
 async function loadComboOptions() {
   try {
@@ -2510,6 +2924,7 @@ fetch('/api/version').then(r=>r.json()).then(d => {
 loadComboOptions();
 fetchStatus();
 setInterval(fetchStatus, 1000);
+setInterval(() => { if (isCapturingKb) fetchStatus(); }, 200);
 setInterval(async () => {
   try {
     const d = await (await fetch('/api/combo/status')).json();
