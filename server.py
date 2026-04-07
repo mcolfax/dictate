@@ -2339,6 +2339,7 @@ let isCapturingUi  = false;
 let isCapturingKb  = false;
 let isCapturingMs  = false;
 let currentHotkeyType = 'combo';
+let hotkeyTabManual = false;  // true when user has manually picked a tab; prevents poll-driven reset
 let isMicTesting   = false;
 let lastHistoryKey = '';
 let languages      = {};
@@ -2395,7 +2396,13 @@ function applyStatus(data) {
 
   // Sync hotkey type tabs and panels
   const htype = config.hotkey_type || 'combo';
-  if (htype !== currentHotkeyType) switchHotkeyType(htype, true);
+  if (!hotkeyTabManual) {
+    // Initial load or config changed from a save — sync tabs to match saved config
+    if (htype !== currentHotkeyType) switchHotkeyType(htype, true);
+  } else if (htype === currentHotkeyType) {
+    // Config was successfully saved with the type the user selected — unlock auto-sync
+    hotkeyTabManual = false;
+  }
 
   // Combo panel
   const cs = document.getElementById('comboSelect');
@@ -2643,7 +2650,7 @@ function showTab(name) {
 
 async function togglePower() { await fetch('/api/toggle', {method:'POST'}); fetchStatus(); }
 
-function switchHotkeyType(type, silent) {
+async function switchHotkeyType(type, silent) {
   currentHotkeyType = type;
   ['combo','keyboard','mouse'].forEach(t => {
     const panel = document.getElementById('htPanel_' + t);
@@ -2651,6 +2658,14 @@ function switchHotkeyType(type, silent) {
     if (panel) panel.style.display = (t === type) ? '' : 'none';
     if (tab)   tab.classList.toggle('active', t === type);
   });
+  if (!silent) {
+    hotkeyTabManual = true;  // Lock tab — don't let poll reset it until a hotkey is saved
+    // Cancel any active capture so keypresses aren't silently swallowed
+    if (isCapturingKb || isCapturingMs) {
+      await fetch('/api/capture/cancel', {method:'POST'});
+      isCapturingKb = false; isCapturingMs = false;
+    }
+  }
 }
 
 async function toggleCaptureKb() {
