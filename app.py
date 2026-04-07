@@ -6,6 +6,7 @@ Subsequent launches: starts normally.
 """
 
 import subprocess, sys, os, time, urllib.request, json, threading, shutil, re
+from objc import python_method
 
 APP_RESOURCES   = os.environ.get("APP_RESOURCES", os.path.dirname(os.path.abspath(__file__)))
 APP_DATA_DIR    = os.environ.get("APP_DATA_DIR",  os.path.expanduser("~/.dictate"))
@@ -35,7 +36,8 @@ from Foundation import NSObject
 class _PopoverController(NSObject):
     """Manages a WKWebView-backed NSPopover triggered by the menu bar icon."""
 
-    def setup_withStatusItem_menu_url_(self, status_item, menu, url_str):
+    @python_method
+    def setup(self, status_item, menu, url_str):
         from AppKit import (NSPopover, NSViewController, NSView, NSMakeRect, NSMakeSize)
         from WebKit import WKWebView, WKWebViewConfiguration
         from Foundation import NSURL, NSURLRequest
@@ -543,7 +545,7 @@ class DictateApp(rumps.App):
             status_item = nsapp.nsstatusitem
             menu = status_item.menu()
             self._popover_ctrl = _PopoverController.alloc().init()
-            self._popover_ctrl.setup_withStatusItem_menu_url_(
+            self._popover_ctrl.setup(
                 status_item, menu, "http://127.0.0.1:5001/popover")
         except Exception as e:
             print(f"Popover setup error: {e}")
