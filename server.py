@@ -258,19 +258,48 @@ exec "{python_exe}" "{script}"
     os.chmod(exe, 0o755)
     return exe
 
+def _kill_stale_overlays():
+    """Kill every lingering overlay.py process (handles multi-session zombies)."""
+    try:
+        r = subprocess.run(["pgrep", "-f", "overlay.py"], capture_output=True, text=True)
+        for pid_str in r.stdout.strip().splitlines():
+            try: os.kill(int(pid_str), 9)
+            except Exception: pass
+    except Exception:
+        pass
+    # Remove stale socket so the new process can bind cleanly
+    try:
+        if os.path.exists(OVERLAY_SOCKET): os.unlink(OVERLAY_SOCKET)
+    except Exception:
+        pass
+
 def show_overlay():
     """Start the overlay subprocess via a mini .app bundle (no dock icon)."""
     global _overlay_proc
     if not config.get("overlay_enabled", True):
         return
-    if _overlay_proc is not None and _overlay_proc.poll() is None:
-        return  # Already running
+
+    # Check whether an existing overlay is already reachable on the socket
+    if os.path.exists(OVERLAY_SOCKET):
+        try:
+            test = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            test.settimeout(0.2)
+            test.connect(OVERLAY_SOCKET)
+            test.close()
+            return  # Overlay alive and reachable — nothing to do
+        except Exception:
+            pass  # Socket file exists but nothing is listening — fall through
+
+    # Socket unreachable: kill any zombie overlay processes and spawn fresh
+    _kill_stale_overlays()
+    _overlay_proc = None
+
     try:
         exe = _build_overlay_bundle()
         _overlay_proc = subprocess.Popen(
             [exe],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=open(os.path.join(_DATA_DIR, "overlay_error.log"), "a"),
         )
         # Poll for socket readiness instead of fixed sleep
         for _ in range(20):
@@ -1158,37 +1187,25 @@ def on_ms_click(x, y, button, pressed):
         if pressed: handle_trigger_press()
         else:       handle_trigger_release()
 
-def _check_accessibility():
-    """Show a dialog if this process lacks Accessibility permission."""
+def _accessibility_granted() -> bool:
+    """Return True if this process has Accessibility permission (no dialog)."""
     try:
         from ApplicationServices import AXIsProcessTrustedWithOptions
-        if not AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": False}):
-            import sys as _sys
-            py_app = (
-                "/Library/Developer/CommandLineTools/Library/Frameworks/"
-                "Python3.framework/Versions/3.9/Resources/Python.app"
-            )
-            script = f"""
-display dialog "Dictate needs Accessibility permission to detect your hotkey.
-
-Please add Python to Accessibility:
-  1. System Settings → Privacy & Security → Accessibility
-  2. Click + then press Cmd+Shift+G
-  3. Paste: {py_app}
-  4. Click Open, enable the toggle
-  5. Restart Dictate" ¬
-buttons {{"Open Settings", "Later"}} default button "Open Settings" ¬
-with title "Accessibility Permission Required" with icon caution
-if button returned of result is "Open Settings" then
-  do shell script "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'"
-end if"""
-            subprocess.Popen(["osascript", "-e", script])
+        return bool(AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": False}))
     except Exception:
-        pass
+        return True  # Unknown — assume OK to avoid false negatives
+
+def _mic_granted() -> bool:
+    """Return True if microphone permission is granted."""
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
+        return status == 3  # 3 = authorized
+    except Exception:
+        return True  # Unknown — assume OK
 
 def start_listener():
     global _kb_listener, _ms_listener
-    _check_accessibility()
     for l in [_kb_listener, _ms_listener]:
         if l:
             try: l.stop()
@@ -1214,6 +1231,7 @@ def api_status():
         "mic_testing": state["mic_testing"], "mic_level": state["mic_level"],
         "overlay_text": state["overlay_text"],
         "config": config, "history": state["history"], "stats": load_stats(),
+        "permissions": {"accessibility": _accessibility_granted(), "mic": _mic_granted()},
     })
 
 @app.route("/api/toggle", methods=["POST"])
@@ -1932,6 +1950,12 @@ HTML = r"""<!DOCTYPE html>
   <!-- Home panel: power + stats -->
   <div class="tab-panel active" id="tab-home">
 
+  <!-- Permissions banner — shown only when a permission is missing -->
+  <div id="permBanner" style="display:none;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px">
+    <div style="font-weight:600;color:var(--amber);margin-bottom:6px">⚠ Permissions needed</div>
+    <div id="permItems" style="display:flex;flex-direction:column;gap:5px"></div>
+  </div>
+
   <!-- Power -->
   <div class="power-section">
     <button class="power-btn" id="powerBtn" onclick="togglePower()">
@@ -2371,7 +2395,38 @@ async function fetchStatus() {
 function applyStatus(data) {
   const { enabled, recording, transcribing, capturing_ui,
           capturing_type, kb_preview, capture_warning, capture_error,
-          mic_testing, mic_level, overlay_text, config, history, stats } = data;
+          mic_testing, mic_level, overlay_text, config, history, stats,
+          permissions } = data;
+
+  // Permissions banner
+  if (permissions) {
+    const missing = [];
+    if (!permissions.accessibility) missing.push({
+      label: 'Accessibility',
+      desc: 'Required for hotkey detection and text injection.',
+      url: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
+    });
+    if (!permissions.mic) missing.push({
+      label: 'Microphone',
+      desc: 'Required for voice recording.',
+      url: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
+    });
+    const banner = document.getElementById('permBanner');
+    const items  = document.getElementById('permItems');
+    if (missing.length > 0) {
+      items.innerHTML = missing.map(p =>
+        `<div style="display:flex;align-items:center;gap:8px">` +
+        `<span style="color:var(--text);font-weight:500">${p.label}</span>` +
+        `<span style="color:var(--dim);flex:1">${p.desc}</span>` +
+        `<button onclick="open('${p.url}')" style="font-size:11px;padding:3px 8px;` +
+        `border-radius:5px;border:1px solid var(--amber);background:transparent;` +
+        `color:var(--amber);cursor:pointer">Open Settings</button></div>`
+      ).join('');
+      banner.style.display = '';
+    } else {
+      banner.style.display = 'none';
+    }
+  }
 
   // Power
   document.getElementById('powerBtn').className    = 'power-btn' + (enabled ? ' on' : '');

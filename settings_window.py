@@ -156,10 +156,25 @@ class SettingsDelegate(NSObject):
             url = NSURL.URLWithString_(SERVER_URL)
             req = NSURLRequest.requestWithURL_(url)
             self._wv.loadRequest_(req)
-            self._check_mic_permission()
+            # Start server health-check — auto-close if server dies
+            self._health_failures = 0
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                2.0, self, "checkServerAlive:", None, True)
         except Exception:
             self._load_attempts += 1
             if self._load_attempts > 50:  # 15 s — server not up, give up
+                timer.invalidate()
+                _clear_lock()
+                NSApplication.sharedApplication().terminate_(None)
+
+    def checkServerAlive_(self, timer):
+        """Close the settings window if the Dictate server has gone away."""
+        try:
+            urllib.request.urlopen(SERVER_URL + "/api/status", timeout=0.8)
+            self._health_failures = 0
+        except Exception:
+            self._health_failures = getattr(self, '_health_failures', 0) + 1
+            if self._health_failures >= 3:   # ~6 s of silence → server is dead
                 timer.invalidate()
                 _clear_lock()
                 NSApplication.sharedApplication().terminate_(None)
@@ -170,32 +185,6 @@ class SettingsDelegate(NSObject):
     def windowDidResize_(self, notification):
         self._save_prefs()
 
-    def _check_mic_permission(self):
-        try:
-            from AVFoundation import (AVCaptureDevice, AVMediaTypeAudio)
-            status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
-            if status == 0:  # Not determined — request
-                def _handler(granted):
-                    if not granted:
-                        self._prompt_mic_settings()
-                AVCaptureDevice.requestAccessForMediaType_completionHandler_(
-                    AVMediaTypeAudio, _handler)
-            elif status == 2:  # Denied
-                self._prompt_mic_settings()
-        except Exception:
-            pass
-
-    def _prompt_mic_settings(self):
-        script = (
-            'display dialog "Dictate needs Microphone access to record your voice.\\n\\n'
-            'Go to System Settings → Privacy & Security → Microphone and enable Dictate." '
-            'with title "Microphone Permission Required" '
-            'buttons {"Open System Settings", "Later"} default button 1'
-        )
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        if "Open System Settings" in result.stdout:
-            subprocess.Popen(["open",
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"])
 
     def webView_didFinishNavigation_(self, wv, nav):
         js = """
@@ -230,7 +219,6 @@ if __name__ == "__main__":
     existing_pid = _already_running()
     if existing_pid:
         # Signal the running process to bring itself to front.
-        # Works even for accessory apps since the process raises itself.
         try:
             os.kill(existing_pid, signal.SIGUSR1)
         except Exception:
@@ -240,6 +228,13 @@ if __name__ == "__main__":
     _write_lock()
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(1)  # accessory — no dock icon
+
+    # Cleanly exit when the parent Dictate app quits (sends SIGTERM)
+    def _on_sigterm(signum, frame):
+        _clear_lock()
+        NSApplication.sharedApplication().terminate_(None)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
     delegate = SettingsDelegate.alloc().init()
     app.setDelegate_(delegate)
     app.run()
