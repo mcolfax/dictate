@@ -29,7 +29,7 @@ def _log_error(msg):
         pass
 SAMPLE_RATE     = 16000
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-APP_VERSION     = "1.5.8"
+APP_VERSION     = "1.5.9"
 GITHUB_RAW      = "https://raw.githubusercontent.com/mcolfax/dictate/main"
 MAX_RECORD_SECS = 120
 
@@ -1001,6 +1001,56 @@ def api_app_tones_set():
 def api_clear_history():
     state["history"] = []; return jsonify({"ok": True})
 
+@app.route("/api/history/export")
+def api_history_export():
+    fmt = request.args.get("fmt", "txt")
+    h = state["history"]
+    if fmt == "csv":
+        import csv, io
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["timestamp", "app", "language", "cleaned", "raw"])
+        for e in h:
+            w.writerow([e.get("ts",""), e.get("app",""), e.get("lang",""),
+                        e.get("cleaned",""), e.get("raw","")])
+        return out.getvalue(), 200, {
+            "Content-Type": "text/csv",
+            "Content-Disposition": "attachment; filename=dictate_history.csv"
+        }
+    else:
+        lines = []
+        for e in h:
+            lines.append(f"[{e.get('ts','')}] {e.get('app','') or ''}")
+            lines.append(e.get("cleaned",""))
+            lines.append("")
+        return "\n".join(lines), 200, {
+            "Content-Type": "text/plain",
+            "Content-Disposition": "attachment; filename=dictate_history.txt"
+        }
+
+@app.route("/api/settings/export")
+def api_settings_export():
+    return json.dumps(config, indent=2), 200, {
+        "Content-Type": "application/json",
+        "Content-Disposition": "attachment; filename=dictate_settings.json"
+    }
+
+@app.route("/api/settings/import", methods=["POST"])
+def api_settings_import():
+    try:
+        imported = request.get_json(force=True)
+        if not isinstance(imported, dict):
+            return jsonify({"error": "Invalid settings file"}), 400
+        # Merge imported over defaults — only accept known keys
+        allowed = set(DEFAULT_CONFIG.keys())
+        for k, v in imported.items():
+            if k in allowed:
+                config[k] = v
+        save_config(config)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
 @app.route("/api/languages", methods=["GET"])
 def api_languages():
     return jsonify(LANGUAGES)
@@ -1715,6 +1765,18 @@ HTML = r"""<!DOCTYPE html>
     </div>
 
     <button class="save-btn" id="generalSaveBtn" onclick="saveAndConfirm()">Save Settings</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <a href="/api/settings/export" download="dictate_settings.json" class="capture-btn" style="text-decoration:none">Export Settings</a>
+        <label class="capture-btn" style="cursor:pointer">Import Settings<input type="file" accept=".json" style="display:none" onchange="importSettings(this)"></label>
+      </div>
+    <!-- Error log -->
+    <div class="field" style="margin-top:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="field-label" style="margin-bottom:0">Error Log</div>
+        <button class="capture-btn" onclick="clearErrors()" style="font-size:10px">Clear</button>
+      </div>
+      <pre id="errorLog" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:10px;color:var(--dim);max-height:120px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;font-family:'JetBrains Mono',monospace;margin:0">No errors logged.</pre>
+    </div>
   </div>
 
   <!-- Language tab -->
@@ -1785,7 +1847,11 @@ HTML = r"""<!DOCTYPE html>
     <div class="section-label" style="margin:0">Recent Transcriptions</div>
     <button class="clear-btn" onclick="clearHistory()">Clear</button>
   </div>
-  <input class="history-search" id="historySearch" placeholder="Search transcriptions…" oninput="filterHistory()" />
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+    <input class="history-search" id="historySearch" placeholder="Search transcriptions…" oninput="filterHistory()" style="flex:1;margin-bottom:0" />
+    <a href="/api/history/export?fmt=txt" download="dictate_history.txt" class="capture-btn" style="text-decoration:none;white-space:nowrap">Export TXT</a>
+    <a href="/api/history/export?fmt=csv" download="dictate_history.csv" class="capture-btn" style="text-decoration:none;white-space:nowrap">Export CSV</a>
+  </div>
   <div class="history-list" id="historyList">
     <div class="empty-state">No transcriptions yet</div>
   </div>
@@ -2096,10 +2162,30 @@ function copyHistory(idx, btn) {
   }).catch(() => {});
 }
 function filterHistory() {
-  const q = document.getElementById('historySearch').value.toLowerCase();
+  const q = document.getElementById('historySearch').value.trim();
+  const ql = q.toLowerCase();
   document.querySelectorAll('.history-item').forEach((el, i) => {
-    const text = (_historyData[i]?.cleaned || '').toLowerCase();
-    el.style.display = (!q || text.includes(q)) ? '' : 'none';
+    const entry = _historyData[i];
+    if (!entry) return;
+    const text = entry.cleaned || '';
+    if (!q) {
+      el.style.display = '';
+      // Restore un-highlighted text
+      const td = el.querySelector('.history-text');
+      if (td) td.innerHTML = escHtml(text);
+      return;
+    }
+    if (!text.toLowerCase().includes(ql)) {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = '';
+    // Highlight matches
+    const td = el.querySelector('.history-text');
+    if (td) {
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      td.innerHTML = escHtml(text).replace(re, m => `<mark style="background:rgba(245,158,11,.35);border-radius:2px;padding:0 1px">${m}</mark>`);
+    }
   });
 }
 
@@ -2110,8 +2196,9 @@ function showTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => {
     p.classList.toggle('active', p.id === `tab-${name}`);
   });
-  if (name === 'vocab')     loadVocab();
-  if (name === 'apptones')  loadAppTones();
+  if (name === 'vocab')    loadVocab();
+  if (name === 'apptones') loadAppTones();
+  if (name === 'general')  loadErrors();
 }
 
 async function togglePower() { await fetch('/api/toggle', {method:'POST'}); fetchStatus(); }
@@ -2279,6 +2366,30 @@ async function saveAndConfirm() { await autoSave(); confirmBtn('generalSaveBtn',
 async function saveLangAndConfirm() { updateLangExample(); await autoSave(); confirmBtn('langSaveBtn', 'Save Language Settings'); }
 async function saveOverlayAndConfirm() { await autoSave(); confirmBtn('overlaySaveBtn', 'Save Overlay Settings'); }
 
+async function loadErrors() {
+  try {
+    const d = await (await fetch('/api/errors')).json();
+    const el = document.getElementById('errorLog');
+    el.textContent = d.log.trim() || 'No errors logged.';
+    el.scrollTop = el.scrollHeight;
+  } catch(e) {}
+}
+async function clearErrors() {
+  await fetch('/api/errors/clear', {method:'POST'});
+  document.getElementById('errorLog').textContent = 'No errors logged.';
+}
+async function importSettings(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const text = await file.text();
+  try {
+    const data = JSON.parse(text);
+    const r = await fetch('/api/settings/import', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+    const d = await r.json();
+    if (d.ok) { alert('Settings imported. Reloading…'); location.reload(); }
+    else alert('Import failed: ' + (d.error || 'unknown error'));
+  } catch(e) { alert('Invalid JSON file.'); }
+}
 function confirmBtn(id, defaultText) {
   const btn = document.getElementById(id);
   btn.textContent = 'Saved ✓'; btn.classList.add('saved');

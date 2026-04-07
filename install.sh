@@ -111,7 +111,16 @@ cat > "$MACOS/Dictate" << 'LAUNCHER'
 BUNDLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RESOURCES="$BUNDLE_DIR/Resources"
 DATA_DIR="$HOME/.dictate"
-PYTHON="$DATA_DIR/venv/bin/python3"
+
+# Prefer ~/.dictate/venv; fall back to dev venv for local dev installs
+if [ -x "$DATA_DIR/venv/bin/python3" ]; then
+    PYTHON="$DATA_DIR/venv/bin/python3"
+elif [ -x "$HOME/Documents/dictation/venv/bin/python3" ]; then
+    PYTHON="$HOME/Documents/dictation/venv/bin/python3"
+else
+    osascript -e 'display alert "Dictate" message "Python venv not found. Please run install.sh first."'
+    exit 1
+fi
 
 mkdir -p "$DATA_DIR"
 

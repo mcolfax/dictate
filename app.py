@@ -21,7 +21,7 @@ SETTINGS_PATH   = _runtime_path("settings_window.py")
 OLLAMA_BIN      = "/opt/homebrew/bin/ollama"
 BREW_BIN        = "/opt/homebrew/bin/brew"
 
-CURRENT_VERSION = "1.5.8"
+CURRENT_VERSION = "1.5.9"
 GITHUB_USER     = "mcolfax"
 GITHUB_REPO     = "dictate"
 GITHUB_RAW      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
@@ -290,12 +290,17 @@ class DictateApp(rumps.App):
             )
             time.sleep(2)
 
-        # Kill any orphaned process already holding port 5001
+        # Kill any orphaned server.py holding port 5001 (check it's actually our process first)
         try:
             result = subprocess.run(["lsof", "-ti", ":5001"], capture_output=True, text=True)
-            for pid in result.stdout.strip().splitlines():
+            for pid_str in result.stdout.strip().splitlines():
                 try:
-                    os.kill(int(pid), 9)
+                    pid = int(pid_str)
+                    # Verify it's a server.py process before killing
+                    cmdline = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                                             capture_output=True, text=True).stdout
+                    if "server.py" in cmdline or "dictate" in cmdline.lower():
+                        os.kill(pid, 9)
                 except Exception:
                     pass
             if result.stdout.strip():
@@ -355,19 +360,20 @@ class DictateApp(rumps.App):
                 recording = data.get("recording", False)
 
                 if recording:
-                    # Cycle animation frames
                     frame_icon = f"icon_menubar_anim_{self._anim_frame}.png"
                     self._anim_frame = (self._anim_frame + 1) % self._anim_frames
                     if self._current_icon != "recording":
                         self._current_icon = "recording"
-                        self.template = False  # Don't apply template tint — amber is intentional
+                        # Set template=False first so the icon isn't tinted before it loads
+                        self.template = False
                     self.icon = os.path.join(APP_RESOURCES, frame_icon)
                 else:
                     if self._current_icon != "icon_menubar.png":
                         self._current_icon = "icon_menubar.png"
                         self._anim_frame = 0
-                        self.template = True
+                        # Load icon before re-enabling template to avoid white flash
                         self.icon = os.path.join(APP_RESOURCES, "icon_menubar.png")
+                        self.template = True
 
                 if enabled != self._enabled:
                     self._enabled = enabled
