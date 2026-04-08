@@ -563,9 +563,19 @@ def stop_and_transcribe():
     if not frames:
         hide_overlay_display()
         return
+
+    audio_data = np.concatenate(frames, axis=0).flatten()
+
+    # Skip transcription if audio is too short or too quiet (avoids hallucinations)
+    duration_s = len(audio_data) / SAMPLE_RATE
+    rms = float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
+    if duration_s < 0.4 or rms < 80:
+        print(f"⏭  Skipping — too short ({duration_s:.2f}s) or too quiet (rms={rms:.0f})")
+        hide_overlay_display()
+        return
+
     state["transcribing"] = True
     print("⏳ Transcribing…")
-    audio_data = np.concatenate(frames, axis=0).flatten()
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         wavfile.write(f.name, SAMPLE_RATE, audio_data)
@@ -588,6 +598,19 @@ print(json.dumps({{"text": result["text"], "language": result.get("language", "e
         detected_lang = result.get("language", "en")
 
         if not raw_text: return
+
+        # Filter Whisper hallucinations — common phantom outputs on near-silent audio
+        _HALLUCINATIONS = {
+            "you", "you.", "thank you.", "thank you", "thanks for watching.",
+            "thanks for watching", "thanks.", "thanks", "bye.", "bye",
+            ".", "..", "...", "okay.", "okay", "ok.", "ok",
+            "subscribe.", "like and subscribe.", "see you next time.",
+        }
+        if raw_text.lower().strip() in _HALLUCINATIONS:
+            print(f"⏭  Filtered hallucination: {raw_text!r}")
+            hide_overlay_display()
+            return
+
         corrected   = apply_vocabulary(raw_text)
         corrected   = remove_fillers(corrected)
         active_app  = get_frontmost_app()
@@ -1674,15 +1697,24 @@ HTML = r"""<!DOCTYPE html>
   .theme-toggle{background:none;border:1px solid var(--border);border-radius:20px;padding:4px 10px;cursor:pointer;font-size:12px;color:var(--dim);font-family:'JetBrains Mono',monospace;transition:all .15s}
   .theme-toggle:hover{border-color:var(--amber);color:var(--amber)}
   /* ── Header waveform ── */
-  .header-wave{display:flex;align-items:center;gap:3px;height:22px;opacity:0;transition:opacity .25s}
-  .header-wave.active{opacity:1}
-  .hw-bar{width:3px;border-radius:2px;background:var(--amber);height:4px;transform-origin:center}
-  .header-wave.active .hw-bar:nth-child(1){animation:hw 0.9s ease-in-out -0.4s infinite}
-  .header-wave.active .hw-bar:nth-child(2){animation:hw 0.9s ease-in-out -0.2s infinite}
-  .header-wave.active .hw-bar:nth-child(3){animation:hw 0.9s ease-in-out  0.0s infinite}
-  .header-wave.active .hw-bar:nth-child(4){animation:hw 0.9s ease-in-out -0.3s infinite}
-  .header-wave.active .hw-bar:nth-child(5){animation:hw 0.9s ease-in-out -0.1s infinite}
-  @keyframes hw{0%,100%{height:4px}50%{height:18px}}
+  .header-wave{display:flex;align-items:center;gap:3px;height:22px;opacity:0;transition:opacity .3s}
+  .header-wave.enabled{opacity:.55}
+  .header-wave.recording{opacity:1}
+  .hw-bar{width:3px;border-radius:2px;background:var(--amber);height:4px;transform-origin:center;transition:height .1s}
+  /* idle: slow gentle pulse when enabled but not recording */
+  .header-wave.enabled .hw-bar:nth-child(1){animation:hw-idle 2.8s ease-in-out -1.1s infinite}
+  .header-wave.enabled .hw-bar:nth-child(2){animation:hw-idle 2.8s ease-in-out -0.6s infinite}
+  .header-wave.enabled .hw-bar:nth-child(3){animation:hw-idle 2.8s ease-in-out  0.0s infinite}
+  .header-wave.enabled .hw-bar:nth-child(4){animation:hw-idle 2.8s ease-in-out -0.8s infinite}
+  .header-wave.enabled .hw-bar:nth-child(5){animation:hw-idle 2.8s ease-in-out -0.3s infinite}
+  /* active: fast animate when recording */
+  .header-wave.recording .hw-bar:nth-child(1){animation:hw-active 0.7s ease-in-out -0.28s infinite}
+  .header-wave.recording .hw-bar:nth-child(2){animation:hw-active 0.7s ease-in-out -0.14s infinite}
+  .header-wave.recording .hw-bar:nth-child(3){animation:hw-active 0.7s ease-in-out  0.00s infinite}
+  .header-wave.recording .hw-bar:nth-child(4){animation:hw-active 0.7s ease-in-out -0.21s infinite}
+  .header-wave.recording .hw-bar:nth-child(5){animation:hw-active 0.7s ease-in-out -0.07s infinite}
+  @keyframes hw-idle{0%,100%{height:3px}50%{height:9px}}
+  @keyframes hw-active{0%,100%{height:4px}50%{height:20px}}
 
   /* ── Power ── */
   .power-section{display:flex;align-items:center;gap:32px;margin-bottom:40px;padding:28px 32px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.15)}
@@ -2478,9 +2510,9 @@ function applyStatus(data) {
     ? `Listening — ${config.hotkey_label} to ${config.mode === 'toggle' ? 'start/stop' : 'hold and record'}`
     : 'Click to enable dictation';
 
-  // Header waveform — visible from every tab while recording
+  // Header waveform — idle pulse when enabled, fast when recording
   const hw = document.getElementById('headerWave');
-  if (hw) hw.className = 'header-wave' + (recording ? ' active' : '');
+  if (hw) hw.className = 'header-wave' + (recording ? ' recording' : enabled ? ' enabled' : '');
 
   // Indicator
   const ind = document.getElementById('indicator');
