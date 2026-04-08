@@ -13,6 +13,7 @@ from WebKit import WKWebView, WKWebViewConfiguration
 
 SERVER_URL  = "http://127.0.0.1:5001"
 LOCK_FILE   = "/tmp/dictate_settings.lock"
+QUIT_FLAG   = os.path.expanduser("~/.dictate/quit.flag")
 PREFS_FILE  = os.path.expanduser("~/.dictate/window_prefs.json")
 MIN_WIDTH   = 520
 MIN_HEIGHT  = 560
@@ -58,6 +59,10 @@ def _clear_lock():
 
 class SettingsDelegate(NSObject):
     def applicationDidFinishLaunching_(self, notification):
+        # Clear any stale quit flag from a previous crash/force-quit
+        try:
+            if os.path.exists(QUIT_FLAG): os.unlink(QUIT_FLAG)
+        except Exception: pass
         w, h = self._restore_size()
         style = (NSTitledWindowMask | NSClosableWindowMask |
                  NSMiniaturizableWindowMask | NSResizableWindowMask)
@@ -144,6 +149,13 @@ class SettingsDelegate(NSObject):
         self._raise_requested = True
 
     def checkRaiseFlag_(self, timer):
+        # Quit-flag: parent app writes this when quitting — close settings window
+        if os.path.exists(QUIT_FLAG):
+            try: os.unlink(QUIT_FLAG)
+            except Exception: pass
+            _clear_lock()
+            NSApplication.sharedApplication().terminate_(None)
+            return
         if self._raise_requested:
             self._raise_requested = False
             self._win.makeKeyAndOrderFront_(None)

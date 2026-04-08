@@ -1645,6 +1645,16 @@ HTML = r"""<!DOCTYPE html>
   .version-badge{font-size:11px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
   .theme-toggle{background:none;border:1px solid var(--border);border-radius:20px;padding:4px 10px;cursor:pointer;font-size:12px;color:var(--dim);font-family:'JetBrains Mono',monospace;transition:all .15s}
   .theme-toggle:hover{border-color:var(--amber);color:var(--amber)}
+  /* ── Header waveform ── */
+  .header-wave{display:flex;align-items:center;gap:3px;height:22px;opacity:0;transition:opacity .25s}
+  .header-wave.active{opacity:1}
+  .hw-bar{width:3px;border-radius:2px;background:var(--amber);height:4px;transform-origin:center}
+  .header-wave.active .hw-bar:nth-child(1){animation:hw 0.9s ease-in-out -0.4s infinite}
+  .header-wave.active .hw-bar:nth-child(2){animation:hw 0.9s ease-in-out -0.2s infinite}
+  .header-wave.active .hw-bar:nth-child(3){animation:hw 0.9s ease-in-out  0.0s infinite}
+  .header-wave.active .hw-bar:nth-child(4){animation:hw 0.9s ease-in-out -0.3s infinite}
+  .header-wave.active .hw-bar:nth-child(5){animation:hw 0.9s ease-in-out -0.1s infinite}
+  @keyframes hw{0%,100%{height:4px}50%{height:18px}}
 
   /* ── Power ── */
   .power-section{display:flex;align-items:center;gap:32px;margin-bottom:40px;padding:28px 32px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.15)}
@@ -1908,6 +1918,10 @@ HTML = r"""<!DOCTYPE html>
 <div class="app app-shell">
   <div class="app-header header">
     <div class="wordmark">dict<span>.</span>ate</div>
+    <div id="headerWave" class="header-wave">
+      <div class="hw-bar"></div><div class="hw-bar"></div><div class="hw-bar"></div>
+      <div class="hw-bar"></div><div class="hw-bar"></div>
+    </div>
     <div class="header-right">
       <span class="version-badge" id="versionBadge">loading...</span>
       <button class="theme-toggle" onclick="cycleTheme()" id="themeBtn">🌙</button>
@@ -2435,6 +2449,10 @@ function applyStatus(data) {
   document.getElementById('powerHint').textContent   = enabled
     ? `Listening — ${config.hotkey_label} to ${config.mode === 'toggle' ? 'start/stop' : 'hold and record'}`
     : 'Click to enable dictation';
+
+  // Header waveform — visible from every tab while recording
+  const hw = document.getElementById('headerWave');
+  if (hw) hw.className = 'header-wave' + (recording ? ' active' : '');
 
   // Indicator
   const ind = document.getElementById('indicator');

@@ -517,17 +517,15 @@ class DictateApp(rumps.App):
             # Regenerate animation icons
             subprocess.run([VENV_PYTHON, os.path.join(APP_DATA_DIR, "make_icons.py")],
                            cwd=APP_DATA_DIR, capture_output=True)
-            # Clean up settings window before restart
-            import signal as _sig
+            # Write quit flag so settings_window closes itself cleanly
             try:
-                r = subprocess.run(["pgrep", "-f", "settings_window.py"], capture_output=True, text=True)
-                for pid in r.stdout.strip().splitlines():
-                    try: os.kill(int(pid), _sig.SIGTERM)
-                    except Exception: pass
+                with open(os.path.join(APP_DATA_DIR, "quit.flag"), "w") as _f: _f.write("quit")
             except Exception: pass
             try: os.unlink("/tmp/dictate_settings.lock")
             except Exception: pass
-            if self._server_proc:  self._server_proc.terminate()
+            if self._server_proc:
+                try: os.kill(self._server_proc.pid, 9)
+                except Exception: pass
             if self._ollama_proc:  self._ollama_proc.terminate()
             subprocess.Popen(["open", "/Applications/Dictate.app"])
             rumps.quit_application()
@@ -587,23 +585,32 @@ class DictateApp(rumps.App):
             print(f"Toggle error: {e}")
 
     def quit_app(self, _):
-        # Kill server and any subprocesses it spawned
+        import subprocess as _sp, signal as _sig
+
+        # Write quit flag — settings_window polls this every 0.1 s and exits cleanly
+        try:
+            quit_flag = os.path.join(APP_DATA_DIR, "quit.flag")
+            with open(quit_flag, "w") as _f: _f.write("quit")
+        except Exception: pass
+
+        # Kill server with SIGKILL (SIGTERM may be ignored by the Obj-C run loop)
         if self._server_proc:
-            try: self._server_proc.terminate()
+            try: os.kill(self._server_proc.pid, 9)
             except Exception: pass
         if self._ollama_proc:
             try: self._ollama_proc.terminate()
             except Exception: pass
-        # Kill settings window and overlay processes
-        import subprocess as _sp, signal as _sig
-        for name in ("settings_window.py", "overlay.py"):
+
+        # Kill overlay processes
+        for name in ("overlay.py",):
             try:
                 r = _sp.run(["pgrep", "-f", name], capture_output=True, text=True)
                 for pid in r.stdout.strip().splitlines():
-                    try: os.kill(int(pid), _sig.SIGTERM)
+                    try: os.kill(int(pid), 9)
                     except Exception: pass
             except Exception:
                 pass
+
         # Remove stale lock file
         try: os.unlink("/tmp/dictate_settings.lock")
         except Exception: pass
