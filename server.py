@@ -412,21 +412,20 @@ def _mic_granted():
         return True  # Can't determine — assume OK
 
 def _check_mic_permission():
-    """Returns True if mic access is granted. Requests it if not yet determined."""
+    """Returns True if mic access is usable. Opens System Settings only if explicitly denied."""
     try:
         from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
         status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
         # 0=notDetermined, 1=restricted, 2=denied, 3=authorized
-        if status == 3:
-            return True
-        if status == 0:
-            # Not yet asked — request and wait
-            return _request_mic_permission()
-        if status == 2:
+        if status == 2:  # explicitly denied — open settings and bail
             subprocess.Popen(["open",
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"])
             return False
-        return False  # restricted
+        if status == 1:  # restricted by MDM/parental controls
+            return False
+        # status 0 (not determined) or 3 (authorized) — let sounddevice try;
+        # PortAudio will trigger the native dialog on first use if needed.
+        return True
     except Exception:
         return True  # Can't check — let sounddevice try
 
